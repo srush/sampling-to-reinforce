@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rl-puzzles"
+version = "0.1.0"
+description = "Finite random-variable experiments with eager JAX arrays"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["jax>=0.4.30"]
+
+[tool.setuptools]
+py-modules = ["jaxlea"]
