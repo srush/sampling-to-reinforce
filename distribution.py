@@ -1,17 +1,18 @@
 """Lea-style finite random variables, evaluated with JAX arrays.
 
 Install: pip install 'jax[cpu]'
-Run examples: python jaxlea.py
-Run checks: python jaxlea.py --test
+Run examples: python distribution.py
+Run checks: python distribution.py --test
 
-    import jaxlea as jl
-    x = jl.vals(-2, -1, 0, 1, 2)
-    y = x.map(lambda v: v ** 2)
-    average = y.times(3) / 3
-    average.mean(), average.var()  # 2, 2.8/3
-    (x + x).var()                 # shared randomness: 8
-    (x + x.new()).var()           # independent copies: 4
-    y.given(x > 0).mean()         # 2.5
+    import distribution as jl
+    x = jl.flip("x")
+    y = x.apply(lambda v: v ** 2)
+    average = jl.mean([jl.flip(f"x.{i}") for i in range(3)])
+    average.mean(), average.var()  # 0, 1/3
+    (x + x).var()                 # shared randomness: 4
+    (x + jl.flip("y")).var()      # independent flips: 2
+    y.given(x > 0).mean()          # 1
+    average.names                 # ('x.0', 'x.1', 'x.2')
 
 Design: eager JAX arrays plus named source axes. No expression graph, parent
 pointers, or deferred evaluation. Arithmetic aligns named axes and immediately
@@ -21,14 +22,16 @@ to preserve derivatives and provenance. No random sampling.
 
 Outcomes may be scalars, vectors, or tensors. Leading axes identify random
 sources; trailing axes are the shape of one outcome (event_shape). Arithmetic
-broadcasts outcome shapes separately from random-source axes. map(f) uses vmap
+broadcasts outcome shapes separately from random-source axes. apply(f) uses vmap
 to apply a JAX-compatible function to each individual outcome. mean() and var()
-return the outcome shape; cov() returns a covariance matrix for vector outcomes.
-given() requires a scalar Boolean per world; e.g. (v > 0).map(jnp.all).
+return the outcome shape; covariance is an expectation of centered products.
+given() requires a scalar Boolean per world; e.g. (v > 0).apply(jnp.all).
 
-Limits: finite support, exponential enumeration (at most MAX_WORLDS).
+Limits: finite support, exponential enumeration for arbitrary arithmetic.
+mean(draws) uses convolution for large independent tables with concrete outcomes.
+Joint tables are bounded by MAX_WORLDS. Compression retains named provenance.
 Build expressions inside a function passed to jit/grad; return JAX arrays, not
-RV objects. Structure/support sizes and times(n) must be static under jit.
+RV objects. Structure/support sizes must be static under jit.
 Masses are normalized at construction. Invalid masses and zero-probability
 evidence produce NaN results (also under jit), not Python exceptions.
 All outcome functions must be defined on every enumerated world: conditioning
@@ -42,22 +45,44 @@ This is a research prototype, not API-compatible with the complete Lea library.
 from dataclasses import dataclass
 import math
 import operator
+from itertools import count
 
 import jax
 import jax.numpy as jnp
 
 MAX_WORLDS = 1_000_000
+_draw_ids = count()
+
+
+@dataclass(frozen=True)
+class Draw:
+    name: str
+    kind: str
+    id: int
+    parent_id: int | None = None
+
+
+def _draw(name, kind, parent_id=None):
+    return Draw(name, kind, next(_draw_ids), parent_id)
 
 
 @dataclass(eq=False, frozen=True)
 class _Source:
     values: object
     mass: object
+    draws: tuple = ()
 
 
 def _merge(*groups):
     # Source equality is object identity, never overloaded RV equality.
-    return tuple(dict.fromkeys(s for group in groups for s in group))
+    sources = tuple(dict.fromkeys(s for group in groups for s in group))
+    owners = {}
+    for source in sources:
+        for draw in source.draws:
+            if draw.id in owners and owners[draw.id] is not source:
+                raise ValueError('Cannot recombine a compressed average with its original draws.')
+            owners[draw.id] = source
+    return sources
 
 
 def _weights(raw):
@@ -113,7 +138,19 @@ class RV:
     def __bool__(self):
         raise TypeError('Use &, |, ~ and .prob(); an RV is not a Python bool.')
 
-    def map(self, f):
+    @property
+    def draws(self):
+        return tuple(dict.fromkeys(draw for s in self._sources for draw in s.draws))
+
+    @property
+    def names(self):
+        return tuple(draw.name for draw in self.draws)
+
+    @property
+    def flips(self):
+        return tuple(draw for draw in self.draws if draw.kind == 'flip')
+
+    def apply(self, f):
         """Apply f to each single outcome using vmap; supports vector outputs."""
         count = math.prod(_shape(self._sources))
         result = jax.vmap(f)(self.values.reshape((count,) + self.event_shape))
@@ -124,7 +161,11 @@ class RV:
 
     def __getitem__(self, key):
         """Index outcome components, not random-source axes: g[0], g[:2], etc."""
-        return self.map(lambda value: value[key])
+        return self.apply(lambda value: value[key])
+
+    def __matmul__(self, other):
+        """Independent product: x @ y, even when x and y share sources."""
+        return independent(self, other)
 
     def _binary(self, other, f):
         other = other if isinstance(other, RV) else constant(other)
@@ -148,7 +189,7 @@ class RV:
         event = event if isinstance(event, RV) else constant(event)
         if event.values.dtype != jnp.bool_ or event.event_shape:
             raise TypeError('given() requires a scalar Boolean per outcome; '
-                            'reduce vector events with .map(jnp.all/any).')
+                            'reduce vector events with .apply(jnp.all/any).')
         sources = _merge(self._sources, event._sources)
         _shape(sources)
         mask = (_align(self.mask, self._sources, sources) &
@@ -156,28 +197,39 @@ class RV:
         return RV(sources, _align(self.values, self._sources, sources),
                   mask, self._source)
 
-    def new(self):
-        """Relabel all source axes to make an independent copy.
+    def _repeat(self, n):
+        """Sum n independent copies, collapsing permutations into count vectors.
 
-        Outcome and mask arrays are reused, not recomputed. Parameter values
-        remain shared for autodiff; the random sources become independent.
-        """
-        replacements = {s: _Source(s.values, s.mass) for s in self._sources}
-        return RV(tuple(replacements.values()), self.values, self.mask,
-                  replacements.get(self._source))
-
-    def times(self, n):
-        """Sum n independent copies; exponential enumeration, no convolution.
-        The result has fresh source axes, independent of this RV's axes.
+        The result is a fresh source, independent of the original RV. Fixed
+        support (including zero-mass worlds) preserves JIT and autodiff.
+        Equal numerical outcomes are not merged: their derivatives can differ.
         """
         if not isinstance(n, int) or n < 0:
             raise ValueError('n must be a static nonnegative Python integer.')
-        if math.prod(s.values.shape[0] for s in self._sources) ** n > MAX_WORLDS:
-            raise ValueError(f'Joint table exceeds {MAX_WORLDS:,} worlds.')
-        result = constant(jnp.zeros(self.event_shape, dtype=self.values.dtype))
-        for _ in range(n):
-            result = result + self.new()
-        return result
+        if n == 0:
+            return constant(jnp.zeros(self.event_shape, dtype=self.values.dtype))
+        values, weights = self.table()
+        k = values.shape[0]
+        size = math.comb(n+k-1, k-1)
+        if size * max(k, math.prod(self.event_shape)) > MAX_WORLDS:
+            raise ValueError(f'Count table exceeds {MAX_WORLDS:,} entries.')
+        from itertools import combinations
+        import numpy as np
+        counts = np.array([np.diff((-1, *bars, n+k-1))-1
+                           for bars in combinations(range(n+k-1), k-1)])
+        coefficients = np.array([math.factorial(n) / math.prod(math.factorial(int(c))
+                                for c in row) for row in counts])
+        counts = jnp.asarray(counts)
+        # Polynomial multiplication keeps higher derivatives finite at zero
+        # masses; array-valued powers can produce 0 * infinity there.
+        factors = jnp.ones(counts.shape, dtype=weights.dtype)
+        for draw in range(1, n+1):
+            factors = factors * jnp.where(counts >= draw, weights, 1)
+        mass = jnp.asarray(coefficients) * jnp.prod(factors, axis=1)
+        totals = (counts @ values.reshape(k, -1)).reshape((size,) + self.event_shape)
+        draws = tuple(_draw(f'{draw.name}[{i}]', draw.kind, draw.id)
+                      for i in range(n) for draw in self.draws)
+        return _pmf(totals, mass, draws)
 
     def _raw_table(self, overrides=None):
         shape = _shape(self._sources)
@@ -209,16 +261,6 @@ class RV:
         weights = mass.reshape((-1,) + (1,) * len(self.event_shape))
         mean = jnp.sum(weights * values, axis=0)
         return jnp.sum(weights * (values - mean) ** 2, axis=0)
-
-    def cov(self):
-        """Covariance matrix for 1D vector outcomes; scalar variance for scalars."""
-        if not self.event_shape:
-            return self.var()
-        if len(self.event_shape) != 1:
-            raise ValueError('cov() requires vector outcomes; use .map(jnp.ravel).')
-        values, mass = self.table()
-        centered = values - jnp.sum(mass[:, None] * values, axis=0)
-        return jnp.einsum('n,ni,nj->ij', mass, centered, centered)
 
     def prob(self):
         """Probability of a Boolean expression, subject to its evidence."""
@@ -256,7 +298,70 @@ def constant(value):
     return RV((), value)
 
 
-def pmf(values, weights):
+def joint(x, y):
+    """Pair two scalar RVs, preserving their actual shared randomness/evidence."""
+    if x.event_shape or y.event_shape:
+        raise ValueError('joint() currently pairs scalar RVs.')
+    return x._binary(y, lambda a, b: jnp.stack(jnp.broadcast_arrays(a, b), axis=-1))
+
+
+def independent(x, y):
+    """Independent product of the two marginals; equivalent to x @ y.
+
+    Both source sets are freshly named and retain parent draw IDs. In contrast,
+    joint(x, y) retains the existing coupling between its arguments.
+    """
+    def copy(rv, side):
+        replacements = {
+            source: _Source(source.values, source.mass,
+                            tuple(_draw(f'{side}.{draw.name}', draw.kind, draw.id)
+                                  for draw in source.draws))
+            for source in rv._sources
+        }
+        return RV(tuple(replacements.values()), rv.values, rv.mask,
+                  replacements.get(rv._source))
+    return joint(copy(x, 'left'), copy(y, 'right'))
+
+
+def mean(draws):
+    """Average explicitly constructed RVs, preserving sharing in small tables.
+
+    Large independent tables use convolution with equal outcomes coalesced.
+    Such a compressed average cannot be recombined with its original inputs.
+    Traced outcomes cannot be coalesced; their tables obey MAX_WORLDS.
+    """
+    draws = list(draws)
+    if not draws:
+        raise ValueError('mean() needs at least one draw.')
+    sources = _merge(*(rv._sources for rv in draws))
+    if math.prod(s.values.shape[0] for s in sources) <= MAX_WORLDS:
+        return sum(draws)/len(draws)
+    seen = set()
+    for rv in draws:
+        ids = {draw.id for draw in rv.draws}
+        if seen & ids:
+            raise ValueError('Large averages require independent draws.')
+        seen.update(ids)
+    import numpy as np
+    total = constant(jnp.zeros(draws[0].event_shape))
+    for rv in draws:
+        combined = total + rv
+        values, weights = combined.table()
+        if isinstance(values, jax.core.Tracer):
+            total = combined
+            continue
+        _, indices, inverse = np.unique(np.asarray(values), axis=0,
+                                        return_index=True, return_inverse=True)
+        mass = jnp.zeros(len(indices), dtype=weights.dtype).at[inverse].add(weights)
+        total = _pmf(values[indices], mass, combined.draws)
+    return total/len(draws)
+
+
+def pmf(values, weights, name="pmf"):
+    return _pmf(values, weights, (_draw(name, 'categorical'),))
+
+
+def _pmf(values, weights, draws):
     """Create a fresh source from (K, *event_shape) values and (K,) weights.
     Duplicated values are allowed and remain separate latent outcomes.
     """
@@ -265,17 +370,24 @@ def pmf(values, weights):
         raise ValueError('Expected values shaped (K, *event_shape) and K weights.')
     if values.size == 0:
         raise ValueError('Empty support is not supported.')
-    source = _Source(values, _weights(weights))
+    source = _Source(values, _weights(weights), draws)
     return RV((source,), values, source=source)
 
 
-def vals(*values):
+def _uniform(*values):
     """Uniform distribution over the supplied outcomes."""
     return pmf(values, jnp.ones(len(values)))
 
 
-def from_logits(values, logits):
-    return pmf(values, jax.nn.softmax(jnp.asarray(logits)))
+def flip(name):
+    """A fresh fair -1/+1 flip (mean 0, variance 1). Reuse the RV to share it."""
+    if not isinstance(name, str) or not name:
+        raise ValueError('A flip needs a nonempty string name.')
+    return _pmf([-1, 1], [1, 1], (_draw(name, 'flip'),))
+
+
+def from_logits(values, logits, name="action"):
+    return pmf(values, jax.nn.softmax(jnp.asarray(logits)), name=name)
 
 
 # Operators immediately compute aligned JAX outcome tensors.
@@ -294,25 +406,25 @@ def _install_operators():
             setattr(RV, '__r' + name + '__',
                     lambda self, other, f=fn:
                     self._binary(other, lambda a, b: f(b, a)))
-    RV.__neg__ = lambda self: self.map(operator.neg)
-    RV.__abs__ = lambda self: self.map(operator.abs)
-    RV.__invert__ = lambda self: self.map(operator.invert)
+    RV.__neg__ = lambda self: self.apply(operator.neg)
+    RV.__abs__ = lambda self: self.apply(operator.abs)
+    RV.__invert__ = lambda self: self.apply(operator.invert)
 
 
 _install_operators()
 
 
 def demo():
-    x = vals(-2, -1, 0, 1, 2)
-    average = (x ** 2).times(3) / 3
+    x = _uniform(-2, -1, 0, 1, 2)
+    average = (x ** 2)._repeat(3) / 3
     print('Average: mean, variance =', average.mean(), average.var())
     print('Conditional square mean =', (x ** 2).given(x > 0).mean())
-    a, b = vals(0, 1), pmf([0, 1], [0.2, 0.8])
+    a, b = _uniform(0, 1), pmf([0, 1], [0.2, 0.8])
     print('P(X | X+Y=1) =', a.posterior_via_grad(a + b == 1)[1])
 
     def objective(logits):
         z = from_logits([-2., -1., 0., 1., 2.], logits)
-        return (z ** 2).times(3).var() / 9
+        return (z ** 2)._repeat(3).var() / 9
 
     print('Gradient of average variance =',
           jax.jit(jax.grad(objective))(jnp.zeros(5)))
@@ -324,24 +436,27 @@ def demo():
     def log_prob(theta, a):
         return jax.nn.log_softmax(theta)[a]
 
-    score = action.map(lambda a: jax.grad(log_prob)(theta, a))
+    score = action.apply(lambda a: jax.grad(log_prob)(theta, a))
     g = reward * score
     print('REINFORCE vector outcomes and masses =', g.table())
     print('Expected gradient =', g.mean())
-    print('Gradient covariance =', g.cov())
-    print('10-sample gradient covariance =', (g.times(10)/10).cov())
+    centered = g-g.mean()
+    print('Gradient covariance =', centered.apply(lambda v: jnp.outer(v, v)).mean())
 
 
 def self_test():
     import unittest
     import numpy as np
 
+    def covariance(rv):
+        return (rv-rv.mean()).apply(lambda v: jnp.outer(v, v)).mean()
+
     class Checks(unittest.TestCase):
         def test_vector_reinforce(self):
             def gradient_rv(theta):
                 p = jax.nn.softmax(theta)
                 a = pmf([0, 1], p)
-                score = a.map(lambda i: jax.nn.one_hot(i, 2) - p)
+                score = a.apply(lambda i: jax.nn.one_hot(i, 2) - p)
                 return a * score
 
             theta = jnp.array([jnp.log(3.), 0.])
@@ -353,8 +468,8 @@ def self_test():
             np.testing.assert_allclose(g.mean(), expected, atol=1e-6)
             np.testing.assert_allclose(g.var(), [.10546875]*2, atol=1e-6)
             cov = .10546875 * np.array([[1., -1.], [-1., 1.]])
-            np.testing.assert_allclose(g.cov(), cov, atol=1e-6)
-            np.testing.assert_allclose((g.times(10)/10).cov(), cov/10, atol=1e-6)
+            np.testing.assert_allclose(covariance(g), cov, atol=1e-6)
+            np.testing.assert_allclose(covariance(g._repeat(10)/10), cov/10, atol=1e-6)
             compiled = jax.jit(lambda t: gradient_rv(t).mean())
             np.testing.assert_allclose(compiled(theta), expected, atol=1e-6)
             # Differentiating the expectation again recovers the Hessian.
@@ -362,58 +477,58 @@ def self_test():
                 jax.hessian(lambda t: jax.nn.softmax(t)[1])(theta), atol=1e-6)
 
         def test_vector_axes_and_conditioning(self):
-            x, y = vals(0., 1.), vals(1., 2., 3.)
-            u = x.map(lambda a: jnp.array([a, 2*a]))
-            v = y.map(lambda b: jnp.array([b, -b]))
+            x, y = _uniform(0., 1.), _uniform(1., 2., 3.)
+            u = x.apply(lambda a: jnp.array([a, 2*a]))
+            v = y.apply(lambda b: jnp.array([b, -b]))
             np.testing.assert_allclose(((u+v)-(v+u)).var(), [0., 0.])
             np.testing.assert_allclose((u*y).mean(), [1., 2.])
             np.testing.assert_allclose(u.given(x+y == 2).mean(), [.5, 1.])
             np.testing.assert_allclose(u.given(x == 1).mean(), [1., 2.])
             np.testing.assert_allclose(u[1].mean(), 1.)
-            np.testing.assert_allclose((u-u).cov(), np.zeros((2, 2)))
-            np.testing.assert_allclose((u-u.new()).cov(), 2*u.cov())
-            np.testing.assert_allclose(u.times(0).mean(), [0., 0.])
-            np.testing.assert_allclose((u > 0).map(jnp.all).prob(), .5)
+            np.testing.assert_allclose(covariance(u-u), np.zeros((2, 2)))
+            np.testing.assert_allclose(covariance(u-u._repeat(1)), 2*covariance(u))
+            np.testing.assert_allclose(u._repeat(0).mean(), [0., 0.])
+            np.testing.assert_allclose((u > 0).apply(jnp.all).prob(), .5)
             with self.assertRaises(TypeError):
                 u.given(u > 0)
 
         def test_vector_sources_and_tensor_broadcasting(self):
             v = pmf([[1., 2.], [3., 4.]], [.25, .75])
             np.testing.assert_allclose(v.mean(), [2.5, 3.5])
-            np.testing.assert_allclose(v.cov(), np.full((2, 2), .75))
+            np.testing.assert_allclose(covariance(v), np.full((2, 2), .75))
             np.testing.assert_allclose(v.posterior_via_grad(v[0] == 3)[1], [0, 1])
             # Outcome broadcasting is independent of the support's size.
             matrix = constant(jnp.array([[1.], [2.], [3.]])) * v
             self.assertEqual(matrix.event_shape, (3, 2))
             np.testing.assert_allclose(matrix.mean(),
                 np.array([[1.], [2.], [3.]]) * np.array([2.5, 3.5]))
-            np.testing.assert_allclose(v.map(lambda z: 7.).mean(), 7.)
+            np.testing.assert_allclose(v.apply(lambda z: 7.).mean(), 7.)
 
         def test_independence_and_reuse(self):
-            x = vals(0, 1)
+            x = _uniform(0, 1)
             self.assertAlmostEqual(float((x + x).var()), 1.)
-            self.assertAlmostEqual(float((x + x.new()).var()), .5)
+            self.assertAlmostEqual(float((x + x._repeat(1)).var()), .5)
             self.assertEqual(float((x - x).var()), 0.)
             # Operands can carry the same axes in opposite orders and sizes.
-            y = vals(1, 2, 3)
+            y = _uniform(1, 2, 3)
             self.assertEqual(float(((x+y)-(y+x)).var()), 0.)
             self.assertAlmostEqual(float(y.given(x+y == 2).mean()), 1.5)
 
         def test_nonlinear_and_iid_average(self):
-            x = vals(-2, -1, 0, 1, 2)
-            m = (x ** 2).times(3) / 3
+            x = _uniform(-2, -1, 0, 1, 2)
+            m = (x ** 2)._repeat(3) / 3
             self.assertAlmostEqual(float(m.mean()), 2., places=5)
             self.assertAlmostEqual(float(m.var()), 2.8 / 3, places=5)
-            self.assertAlmostEqual(float((1 / vals(1, 2)).mean()), .75)
+            self.assertAlmostEqual(float((1 / _uniform(1, 2)).mean()), .75)
 
         def test_conditioning_and_clone(self):
-            x, y = vals(0, 1), pmf([0, 1], [.2, .8])
+            x, y = _uniform(0, 1), pmf([0, 1], [.2, .8])
             event = x + y == 1
             self.assertAlmostEqual(float(event.prob()), .5)
             self.assertAlmostEqual(float(x.given(event).mean()), .2)
             self.assertAlmostEqual(float((x+y).given(event).var()), 0.)
             c = x.given(event)
-            self.assertAlmostEqual(float((c-c.new()).var()), .32, places=6)
+            self.assertAlmostEqual(float((c-c._repeat(1)).var()), .32, places=6)
             self.assertTrue(bool(jnp.isnan(x.given(x > 2).mean())))
             with self.assertRaises(TypeError):
                 bool(x)
@@ -424,20 +539,20 @@ def self_test():
                 return x.posterior_via_grad(x + y == 1)[1]
             p, q = jnp.array([.5, .5]), jnp.array([.2, .8])
             np.testing.assert_allclose(jax.jit(posterior)(p, q), [.8, .2])
-            x = vals(0, 1)
+            x = _uniform(0, 1)
             np.testing.assert_allclose(x.posterior_via_grad(x+x == 2)[1], [0, 1])
 
         def test_gradients(self):
             def objective(logits):
                 x = from_logits([-2., -1., 0., 1., 2.], logits)
-                return (x**2).times(3).var() / 9
+                return (x**2)._repeat(3).var() / 9
             # d Var(Y)/d logit_i = p_i ((y_i-mu)^2 - Var(Y)).
             expected = np.array([1.2, -1.8, 1.2, -1.8, 1.2]) / 15
             np.testing.assert_allclose(jax.jit(jax.grad(objective))(jnp.zeros(5)),
                                        expected, atol=1e-6)
             # Moving support values also retain their pathwise derivatives.
             def moving(t):
-                return (vals(-1., 1.).map(lambda v: t*v)).var()
+                return (_uniform(-1., 1.).apply(lambda v: t*v)).var()
             self.assertAlmostEqual(float(jax.grad(moving)(2.)), 4.)
 
         def test_conditional_gradient(self):
@@ -451,12 +566,38 @@ def self_test():
 
         def test_validation_and_limits(self):
             with self.assertRaises(ValueError):
-                vals()
+                _uniform()
             with self.assertRaises(TypeError):
-                vals(0, 1).given(1).mean()
+                _uniform(0, 1).given(1).mean()
             with self.assertRaises(ValueError):
-                vals(0, 1).times(21).mean()
+                _uniform(0, 1)._repeat(MAX_WORLDS).mean()
             self.assertTrue(bool(jnp.isnan(pmf([0, 1], [-1., 2.]).mean())))
+
+        def test_compact_times(self):
+            die = _uniform(1., 2., 3., 4., 5., 6.)
+            average = die._repeat(10) / 10
+            self.assertEqual(average.table()[0].shape, (3003,))
+            np.testing.assert_allclose(average.mean(), die.mean(), rtol=1e-5)
+            np.testing.assert_allclose(average.var(), die.var()/10, rtol=1e-5)
+            # The new sum is independent of its original sources.
+            copy = die._repeat(1)
+            np.testing.assert_allclose((copy-die).var(), 2*die.var(), rtol=1e-5)
+            tensor = die.apply(lambda a: jnp.array([[a, 2*a], [-a, a*a]]))
+            np.testing.assert_allclose(tensor._repeat(2).mean(), 2*tensor.mean(), rtol=1e-5)
+            np.testing.assert_allclose(tensor._repeat(2).var(), 2*tensor.var(), rtol=1e-5)
+
+        def test_compact_times_conditioned_autodiff(self):
+            def compact(t):
+                x = from_logits([0., 1., 2.], jnp.array([0., t, -t]))
+                return (x.given(x > 0)._repeat(3)/3).var()
+            def reference(t):
+                x = from_logits([0., 1., 2.], jnp.array([0., t, -t]))
+                return x.given(x > 0).var()/3
+            for order in range(3):
+                left, right = compact, reference
+                for _ in range(order):
+                    left, right = jax.grad(left), jax.grad(right)
+                np.testing.assert_allclose(jax.jit(left)(.3), jax.jit(right)(.3), atol=1e-6)
 
     result = unittest.TextTestRunner(verbosity=2).run(
         unittest.defaultTestLoader.loadTestsFromTestCase(Checks))

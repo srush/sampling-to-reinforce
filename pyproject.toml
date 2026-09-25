@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Finite random-variable experiments with eager JAX arrays"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["jax>=0.4.30"]
+dependencies = ["jax>=0.4.30", "matplotlib>=3.8", "ipython>=8", "jupytext>=1.16"]
 
 [tool.setuptools]
-py-modules = ["jaxlea"]
+py-modules = ["distribution", "viz", "puzzles", "checks", "dist_types", "intro_answers"]
