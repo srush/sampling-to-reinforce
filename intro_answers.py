@@ -12,6 +12,10 @@ def shift(x: Var, amount: float) -> Var:
     return x.op(lambda a: a + amount)
 
 
+def square(x: Var, b: float) -> Var:
+    return x.op(lambda a: a ** b)
+
+
 def six_from_eight(x: Var) -> Var:
     return x.cond(lambda a: a <= 6)
 
@@ -174,6 +178,10 @@ def additive(x: Var, f: Callable[[float], float],
 
 
 def two_dice(x: Var) -> Var:
+    return indep(x, x).add()
+
+
+def two_triangles(x: Var) -> Var:
     return indep(x, x).add()
 
 

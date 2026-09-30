@@ -26,10 +26,10 @@ class NewPuzzles(unittest.TestCase):
         from viz import covariance_3d
         x = d.flip("x")
         with patch.object(plt, "show"):
-            fig = covariance_3d(x @ x)
+            fig = covariance_3d(x @ x, show=False)
         ax = fig.axes[0]
         self.assertEqual([t.get_text().strip() for t in ax.texts],
-                         ["-1, -1", "-1, 1", "1, -1", "1, 1"])
+                         ["-1,-1", "-1,1", "1,-1", "1,1"])
         self.assertEqual(len(ax.get_xticks()), 0)
         self.assertEqual(len(ax.get_yticks()), 0)
         red = [line for line in ax.lines if line.get_color() == "#c63737"]
@@ -52,7 +52,7 @@ class NewPuzzles(unittest.TestCase):
         from unittest.mock import patch
         from viz import variance_3d
         with patch.object(plt, "show"):
-            fig = variance_3d(d.flip("x"))
+            fig = variance_3d(d.flip("x"), show=False)
         ax = fig.axes[0]
         self.assertEqual(len(ax.get_xticks()), 0)
         self.assertEqual(len(ax.get_yticks()), 0)
@@ -61,7 +61,7 @@ class NewPuzzles(unittest.TestCase):
         self.assertEqual([t.get_text().strip() for t in ax.texts], ["-1", "1"])
         outlines = [line for line in ax.lines if line.get_color() == "#4c8194"]
         self.assertTrue(all(line.get_alpha() == .3 for line in outlines))
-        np.testing.assert_allclose(ax.get_zticks(), [0, .5])
+        self.assertEqual(len(ax.get_zticks()), 0)
         self.assertEqual(len(ax.lines), 2*12+2+1)
         red = [line for line in ax.lines if line.get_color() == "#c63737"]
         self.assertEqual(len(red), 1)
@@ -113,7 +113,7 @@ class NewPuzzles(unittest.TestCase):
         die = p.four_sides()
         check("four", die, plot=False)
         with patch.object(plt, "show"):
-            fig = variance_3d(die)
+            fig = variance_3d(die, show=False)
         ax = fig.axes[0]
         self.assertEqual(len(ax.get_xticks()), 0)
         self.assertEqual(len(ax.get_yticks()), 0)
@@ -133,7 +133,7 @@ class NewPuzzles(unittest.TestCase):
             volume += (xs[-1]-2.5)*(ys[-1]-2.5)*zs[-1]
         np.testing.assert_allclose(volume, die.var())
         np.testing.assert_allclose(volume, 1.25)
-        self.assertIn("1.25", ax.get_title())
+        self.assertEqual(ax.get_title(), "")
         plt.close(fig)
 
     def test_named_flip_provenance(self):

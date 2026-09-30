@@ -324,6 +324,151 @@ class IntroTests(unittest.TestCase):
         self.assertDist(positive.add(), [0, 1, 2], [.25, .25, .5])
         self.assertDist(negative.add(), [0, 1, 2], [0, .75, .25])
 
+    def test_histogram_merges_float_duplicates(self):
+        from viz import _scalar_mass, _plot_dist
+        x = Var([.7999999999999998, .8, .8000000000000003, .804, .82],
+                [.1, .2, .3, .1, .3])
+        values, mass = _scalar_mass(_plot_dist(x))
+        np.testing.assert_allclose(values, [.8, .804, .82])
+        np.testing.assert_allclose(mass, [.6, .1, .3])
+        self.assertEqual(len(x.values), 5)
+        import intro_answers as a
+        population = Var([0, 1, 2, 3], [.25]*4)
+        result = a.ab_sampling(population, lambda s: s+1, lambda s: s, 5)
+        values, mass = _scalar_mass(_plot_dist(result))
+        self.assertEqual(len(values), 31)
+        self.assertAlmostEqual(mass.sum(), 1)
+
+    def test_equal_width_plot_bins(self):
+        from viz import _range_masses
+        values = np.arange(1000.)**2
+        mass = np.ones(1000)/1000
+        (centers, grouped), = _range_masses((values, mass))
+        width = (values.max()-values.min())*.02
+        self.assertLessEqual(len(centers), 51)
+        edges = np.r_[centers-width/2, centers[-1]+width/2]
+        expected, _ = np.histogram(values, bins=edges, weights=mass)
+        np.testing.assert_allclose(grouped, expected)
+        self.assertAlmostEqual(grouped.sum(), 1)
+        np.testing.assert_allclose(np.diff(centers), width)
+        a, b = _range_masses((values, mass), (values, mass))
+        np.testing.assert_allclose(a, b)
+        (centers, grouped), = _range_masses((np.array([1., 2.]), np.array([.3, .7])))
+        np.testing.assert_allclose(centers, [1, 2])
+        np.testing.assert_allclose(grouped, [.3, .7])
+        (centers, grouped), = _range_masses((np.array([2.]), np.array([1.])))
+        np.testing.assert_allclose(centers, [2])
+        np.testing.assert_allclose(grouped, [1])
+        blue = (np.array([.95, .99, 1., 1.01, 1.05]), np.ones(5)/5)
+        gray = (np.array([-2., 4.]), np.array([.5, .5]))
+        (centers, grouped), _ = _range_masses(blue, gray)
+        np.testing.assert_allclose(centers, [1.])
+        np.testing.assert_allclose(grouped, [1.])
+
+    def test_shared_control_display(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        import matplotlib.pyplot as plt
+        from viz import show_control
+        pair = shared(self.x).op(lambda x: 2*x, lambda x: x)
+        output = StringIO()
+        with redirect_stdout(output):
+            fig = show_control(pair, steps=2, show=False)
+        self.assertIn("Var 1 = 2; Var 2 = 0.5; 2 Cov = 2", output.getvalue())
+        self.assertIn("= 0.5", output.getvalue())
+        self.assertEqual(len(fig.axes[0].texts), 0)
+        np.testing.assert_allclose(fig.axes[0].collections[1].get_facecolors()[0], [1, 1, 1, 1])
+        plt.close(fig)
+
+    def test_linear_control_slider(self):
+        from plotly_viz import linear_control_frames
+        from checks import linear_f
+        frames = linear_control_frames(Var(np.arange(1, 7), np.ones(6)/6), linear_f)
+        self.assertEqual(len(frames), 21)
+        for frame in frames:
+            va, vb, cross, total = frame["terms"]
+            self.assertAlmostEqual(va + vb - cross, total)
+            self.assertAlmostEqual(frame["mc_variance"], total / 5)
+            self.assertAlmostEqual(frame["mean"], frames[0]["mean"])
+            np.testing.assert_allclose(frame["b"], frames[0]["b"])
+            for values, masses in frame["grouped"]:
+                self.assertAlmostEqual(masses.sum(), 1)
+        self.assertGreater(frames[-1]["terms"][-1], frames[0]["terms"][-1])
+
+    def test_interactive_variance(self):
+        from plotly_viz import variance_widget
+        html = variance_widget(self.x).data
+        self.assertIn('"dragmode":false', html)
+        self.assertIn("plotly_hover", html)
+        self.assertNotIn("Variance contribution", html)
+        self.assertIn("Plotly.restyle", html)
+
+    def test_scaled_variance_slider(self):
+        from plotly_viz import scaled_variance_slider, _covariance_figure
+        from intro_answers import variance
+        x=Var(np.arange(1,9),np.array([1,3,1,3,1,3,1,3])/16)
+        for b in range(1,5):
+            self.assertAlmostEqual(variance(x.op(lambda a: b*a)),b*b*variance(x))
+        html=scaled_variance_slider(x).data
+        self.assertIn('"active":0',html)
+        self.assertIn('"label":"4"',html)
+        self.assertNotIn('"label":"0"',html)
+        self.assertIn('Var(bX) = 83.00',html)
+        self.assertIn('Var(bX) = 20.75',html)
+        bounds=(1,8,3)
+        f1,_,_=_covariance_figure(shared(x),True,bounds=bounds,height_scale=1)
+        f4,_,_=_covariance_figure(shared(x),True,bounds=bounds,height_scale=16)
+        dots1=[t for t in f1.data if t.mode=="markers"]
+        dots4=[t for t in f4.data if t.mode=="markers"]
+        for a,b in zip(dots1,dots4):
+            np.testing.assert_allclose(a.x,b.x)
+            np.testing.assert_allclose(np.array(a.y)*16,b.y)
+
+    def test_square_and_triangle_sum(self):
+        from intro_answers import square, triangular, two_triangles, variance
+        x=Var([-2,1,2],[.2,.3,.5])
+        self.assertAlmostEqual(expect(square(x,2)),3.1)
+        self.assertAlmostEqual(expect(square(x,0)),1)
+        self.assertAlmostEqual(expect(square(Var([1,4],[.5,.5]),.5)),1.5)
+        tri=triangular(Var(np.arange(11),np.ones(11)/11),Var(np.arange(1,7)/6,np.ones(6)/6))
+        summed=two_triangles(tri)
+        np.testing.assert_allclose(summed.values,np.arange(21))
+        np.testing.assert_allclose(summed.probs,np.convolve(tri.probs,tri.probs))
+        self.assertAlmostEqual(variance(summed),2*variance(tri))
+
+    def test_plotly_histogram(self):
+        from plotly_viz import _histogram_figure, _covariance_figure, square_slider
+        fig=_histogram_figure(self.x)
+        self.assertEqual(fig.layout.yaxis.range[0],0)
+        self.assertEqual(fig.data[-1].mode,"markers")
+        np.testing.assert_allclose(fig.data[-1].y,self.x.probs)
+        np.testing.assert_allclose(fig.layout.xaxis.tickvals,self.x.values)
+        dense=Var(np.arange(12),np.ones(12)/12)
+        np.testing.assert_allclose(_histogram_figure(dense).layout.xaxis.tickvals,dense.values)
+        joint,boxes,mapping=_covariance_figure(indep(self.x,self.y),boxes=False)
+        self.assertTrue(all(joint.data[i].visible is False for i in boxes))
+        self.assertEqual(len(joint.layout.shapes),1)
+        self.assertIn('b = ',square_slider(Var([1,4],[.5,.5])).data)
+
+    def test_foreground_variance_and_coin_slider(self):
+        from plotly_viz import _covariance_figure, coin_variance_slider
+        fig, boxes, mapping = _covariance_figure(indep(self.x,self.x))
+        targets = [int(index) for index in mapping]
+        self.assertGreater(min(targets), max(boxes))
+        labels = [trace for trace in fig.data if trace.mode == "markers+text"]
+        self.assertEqual(len(labels),4)
+        self.assertTrue(all(", " not in trace.text[0] for trace in labels))
+        self.assertTrue(all(str(i) in mapping for i,t in enumerate(fig.data) if t.mode == "markers+text"))
+        for trace in labels:
+            self.assertEqual(trace.hovertemplate.count("<br>"), 2)
+            self.assertNotIn("Mass", trace.hovertemplate)
+        self.assertEqual(fig.layout.hoverlabel.font.size,11)
+        self.assertTrue(all(fig.data[len(boxes)+b].opacity == .3 for b in boxes))
+        html=coin_variance_slider(20).data
+        self.assertIn('"label":"20"',html)
+        self.assertIn('Coin flips:',html)
+        self.assertIn('"fixedrange":true',html)
+
     def test_plot_rounding(self):
         from viz import _number, covariance_3d
         import matplotlib.pyplot as plt
@@ -454,11 +599,13 @@ class IntroTests(unittest.TestCase):
         import matplotlib.pyplot as plt
         from viz import histogram, variance_3d, covariance_3d
         with patch.object(plt, "show"):
-            figs = [histogram(self.x), variance_3d(self.x), covariance_3d(indep(self.x, self.y))]
+            figs = [histogram(self.x, show=False), variance_3d(self.x, show=False), covariance_3d(indep(self.x, self.y), show=False)]
             with self.assertRaises(TypeError):
                 covariance_3d(self.x)
-            figs.append(histogram(shared(self.x)))
-        self.assertEqual(figs[1].axes[0].get_title(), "variance 1")
+            figs.append(histogram(shared(self.x), show=False))
+        self.assertEqual(figs[1].axes[0].get_title(), "")
+        self.assertEqual(figs[1].axes[0].get_zlabel(), "")
+        self.assertEqual(len(figs[1].axes[0].get_zticks()), 0)
         for fig in figs:
             plt.close(fig)
 
@@ -481,7 +628,7 @@ class IntroTests(unittest.TestCase):
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
         from viz import histogram
         with patch.object(plt, "show"):
-            fig = histogram(indep(self.x, self.y))
+            fig = histogram(indep(self.x, self.y), show=False)
         ax = fig.axes[0]
         self.assertFalse(any(isinstance(c, Poly3DCollection) for c in ax.collections))
         self.assertEqual(len(ax.lines), 6)
@@ -502,7 +649,7 @@ class IntroTests(unittest.TestCase):
         from viz import histogram
         with patch.object(plt, "show"):
             for dist in (self.x, self.y, Var([0, 1], [.123456789, .876543211])):
-                fig = histogram(dist)
+                fig = histogram(dist, show=False)
                 ax = fig.axes[0]
                 self.assertEqual(ax.get_ylim()[0], 0)
                 posts = [c for c in ax.collections if isinstance(c, LineCollection)]
@@ -511,7 +658,7 @@ class IntroTests(unittest.TestCase):
                 for segment, value, prob in zip(posts[0].get_segments(), dist.values, dist.probs):
                     np.testing.assert_allclose(segment, [[value, 0], [value, prob]])
                 plt.close(fig)
-            fig = histogram(add(indep(self.x, self.x)), without=add(shared(self.x)))
+            fig = histogram(add(indep(self.x, self.x)), without=add(shared(self.x)), show=False)
             self.assertEqual(fig.axes[0].get_ylim()[0], 0)
             plt.close(fig)
 

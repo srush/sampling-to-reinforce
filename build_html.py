@@ -32,11 +32,13 @@ def build():
                        if chunk.startswith('$$') else markdown.render(chunk) for chunk in chunks)
     namespace = {"__name__": "__main__"}
     sections, images = [], []
-    names = ("four_sides", "six_sides", "triangular", "weighted_die", "two_dice", "single_sample",
+    section_open = False
+    names = ("four_sides", "six_sides", "triangular", "weighted_die", "two_triangles", "single_sample",
                          "ten_samples", "independent_two_variables", "linear_control", "quadratic_control",
                          "two_variables", "additive", "kl_estimate", "kl_k3", "kl_topk",
                          "markov_chain", "markov_unigram", "group_rewards", "reinforce", "reinforce_loo")
     titles = ["Four sides","Six sides","Triangular distribution","Weighted dice from fair coins","Two dice","One sample","Monte Carlo · ten samples","Independent two-variable Monte Carlo","A roughly linear control variate","Five samples, a roughly parabolic function","Five samples, two variables","Five samples, an additive function","k1 KL estimate","k3 KL control variate","Unbiased top-k KL","A two-state Markov chain","A unigram control variate","Additive rewards from one model draw","REINFORCE with a two-dimensional gradient","REINFORCE with leave-one-out"]
+    titles[4] = "Two triangles"
     answers = dict(zip(titles, names))
     question_ids = {title: f"puzzle-{i}" for i, title in enumerate(titles, 1)}
 
@@ -54,8 +56,19 @@ def build():
 
     original_show = plt.show
     original_display = IPython.display.display
+    from plotly.offline import get_plotlyjs
+    plotly_bundle = get_plotlyjs()
+    plotly_loaded = False
     def capture_display(obj):
-        if isinstance(obj, IPython.display.Image) and obj.format == "gif":
+        nonlocal plotly_loaded
+        if isinstance(obj, IPython.display.HTML):
+            html = obj.data
+            if plotly_bundle in html:
+                if plotly_loaded:
+                    html = html.replace(plotly_bundle, "")
+                plotly_loaded = True
+            images.append(html)
+        elif isinstance(obj, IPython.display.Image) and obj.format == "gif":
             encoded = base64.b64encode(obj.data).decode()
             images.append(f'<img alt="Variance of the average of 1 to 20 coin flips" src="data:image/gif;base64,{encoded}">')
             (root / "build").mkdir(exist_ok=True)
@@ -68,11 +81,12 @@ def build():
         for cell in notebook.cells:
             if cell.cell_type == "markdown":
                 if cell.source.startswith("## "):
-                    if sections:
+                    if section_open:
                         sections.append("</section>")
                     heading = cell.source.splitlines()[0][3:]
                     section_id = question_ids.get(heading, heading.lower().replace(" · ", "-").replace(" ", "-").replace(":", "").replace("/", ""))
                     sections.append(f'<section id="{escape(section_id)}" class="puzzle">')
+                    section_open = True
                     sections.append(render_markdown(cell.source))
                     if heading.startswith(("Exercise · ", "Helper · ")):
                         name = heading.split(" · ", 1)[1]
@@ -90,7 +104,10 @@ def build():
                         answer = inspect.getsource(intro_answers.k1) + "\n" + answer
                     sections.append(code(answer))
                 else:
-                    sections.append('<section class="intro">' + render_markdown(cell.source))
+                    if not section_open:
+                        sections.append('<section id="introduction" class="intro">')
+                        section_open = True
+                    sections.append(render_markdown(cell.source))
             elif cell.cell_type == "code":
                 output = StringIO()
                 images.clear()
@@ -98,12 +115,15 @@ def build():
                     exec(compile(cell.source, "puzzle.py", "exec"), namespace)
                 if "hide" not in cell.metadata.get("tags", []):
                     sections.append(code(cell.source))
+                    if output.getvalue():
+                        sections.append('<pre class="output">' + escape(output.getvalue()) + '</pre>')
                 sections.extend(images)
     finally:
         plt.show = original_show
         IPython.display.display = original_display
         plt.close("all")
-    sections.append("</section>")
+    if section_open:
+        sections.append("</section>")
     css = """
     :root{color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#faf9f5;color:#24353c;
     font:16px/1.65 system-ui,-apple-system,sans-serif}header{padding:22px 6vw;border-bottom:1px solid #deded6;

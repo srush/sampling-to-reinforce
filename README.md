@@ -56,12 +56,16 @@ equal outcomes coalesced. Compressed results keep their names and flip records,
 but cannot be recombined with their original inputs. Traced outcomes are not
 coalesced, so JIT/autodiff workloads must fit the joint-table budget.
 
-To build the illustrated HTML and serve it locally:
+To preview the illustrated HTML while editing the Python notebook:
 
 ```bash
-python build_html.py
-python -m http.server 8765 --bind 127.0.0.1 --directory build
+python3 preview.py
 ```
+
+Open `http://127.0.0.1:8765`. Edits to `puzzle.py` or its Python helpers
+rebuild the page and refresh the browser automatically. Keep this command
+running while we rearrange the notebook together. For a one-time export, run
+`python3 build_html.py`; it writes `build/index.html`.
 
 `distribution` is a small Lea-style library for exact enumeration of finite random
 variables, built from eager JAX arrays. It supports nonlinear transformations,

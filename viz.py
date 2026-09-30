@@ -34,15 +34,38 @@ def _plot_joint(j):
 
 
 def _scalar_mass(rv):
+    """Collect scalar probability masses, merging floating-point duplicates."""
     values, mass = (np.asarray(a) for a in rv.table())
     if values.ndim != 1 or not np.isfinite(values).all():
         raise ValueError("Expected a finite scalar distribution")
     if not np.isfinite(mass).all() or np.any(mass < 0) or mass.sum() <= 0:
         raise ValueError("Invalid probability masses")
-    support, inverse = np.unique(values, return_inverse=True)
+    support, inverse = np.unique(np.round(values, 12), return_inverse=True)
     mass = np.bincount(inverse, weights=mass)
     keep = mass > 0
     return support[keep], mass[keep]/mass.sum()
+
+
+def _range_masses(*distributions):
+    """Sum masses on a shared, mean-centered grid of width 2% of the range."""
+    values = np.concatenate([v for v, p in distributions])
+    weights = np.concatenate([p/len(distributions) for v, p in distributions])
+    support = np.unique(values)
+    if len(support) == 1:
+        return [(support.copy(), np.array([mass.sum()])) for values, mass in distributions]
+    width = (support[-1]-support[0])*.02
+    if np.all(np.diff(support) >= width):
+        return [(v.copy(), p.copy()) for v, p in distributions]
+    center = float(values @ weights / weights.sum())
+    def bins(values):
+        return np.floor((values-center)/width + .5 + 1e-12).astype(int)
+    result = []
+    for values, mass in distributions:
+        indices, inverse = np.unique(bins(values), return_inverse=True)
+        grouped = np.bincount(inverse, weights=mass)
+        keep = grouped > 0
+        result.append((center + indices[keep]*width, grouped[keep]))
+    return result
 
 
 def _count_tokens(mass, limit=80):
@@ -65,9 +88,25 @@ def _count_tokens(mass, limit=80):
 
 def _discrete_dots(ax, support, mass, color="#4c8194", hollow=False):
     ax.vlines(support, 0, mass, color="black", linewidth=2.4, zorder=1)
-    ax.scatter(support, mass, s=32,
-               facecolors="none" if hollow else color, edgecolors=color, alpha=.7, linewidths=1)
+    ax.scatter(support, mass, s=55,
+               facecolors="white" if hollow else color, edgecolors=color,
+               alpha=1, linewidths=1, zorder=3)
     ax.set_ylim(0, max(ax.get_ylim()[1], 1.08*float(mass.max())))
+
+
+def _minimal_histogram_axes(ax, values):
+    values = np.unique(values)
+    labels = {}
+    gap = (values[-1]-values[0])/7
+    last = -np.inf
+    for value in values:
+        if value-last >= gap and _number(value) not in labels:
+            labels[_number(value)] = value
+            last = value
+    ax.set_xticks(list(labels.values()), list(labels))
+    ax.set_yticks([])
+    ax.spines[:].set_visible(False)
+    ax.tick_params(axis="x", length=0, pad=9, colors="#263940", labelsize=14)
 
 
 def _geometry_axes():
@@ -81,6 +120,12 @@ def _geometry_axes():
 
 def variance_3d(x, **kwargs):
     """Squares with side |x-E[x]|, extruded by probability; volume is variance."""
+    if kwargs.get("show", True):
+        from IPython.display import display
+        from plotly_viz import variance_widget
+        widget = variance_widget(x)
+        display(widget)
+        return widget
     if isinstance(x, Var):
         from intro_answers import shared
         return covariance_3d(shared(x), variance=True, **kwargs)
@@ -123,6 +168,14 @@ def covariance_3d(pair, variance=False, show=True, probability_limit=None,
     Raw outcome axes; boxes run from the means to each outcome and up to p.
     Red lines locate the means. No independence is assumed.
     """
+    if show:
+        from IPython.display import display
+        from plotly_viz import covariance_widget
+        if isinstance(pair,Var):
+            raise TypeError("Covariance needs a Joint")
+        widget=covariance_widget(pair,variance=variance,boxes=boxes)
+        display(widget)
+        return widget
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     if isinstance(pair, Var):
         raise TypeError("Covariance needs a Joint; use shared(x) or indep(x, y)")
@@ -142,7 +195,7 @@ def covariance_3d(pair, variance=False, show=True, probability_limit=None,
     covariance = float(mass @ (deviations[:, 0]*deviations[:, 1]))
     fig = plt.figure(figsize=(8, 5.8), layout="constrained")
     fig.set_facecolor("#faf9f5")
-    ax = fig.add_subplot(111, projection="3d")
+    ax = fig.add_subplot(111, projection="3d", computed_zorder=False)
     ax.set_facecolor("#faf9f5")
     def box_edges(corners, color, width):
         for i, j in ((0, 1), (1, 2), (2, 3), (3, 0),
@@ -167,11 +220,11 @@ def covariance_3d(pair, variance=False, show=True, probability_limit=None,
             ax.add_collection3d(Poly3DCollection(faces, facecolors=color, edgecolors="none", alpha=.1))
             box_edges(vertices, color, .8)
         ax.plot([x, x], [y, y], [0, p], color="black", lw=2.2)
-        ax.scatter([x], [y], [p], color=color, s=35)
-        label = f"{_number(x)}" if variance else f"{_number(x)}, {_number(y)}"
+        ax.scatter([x], [y], [p], color=color, s=60, depthshade=False, zorder=10)
+        label = f"{_number(x)}" if variance else f"{_number(x)},{_number(y)}"
         if index in labeled:
             ax.text(x, y, 0, f"\n{label}", ha="center", va="top",
-                    color="#263940", fontsize=10, clip_on=False, zorder=20)
+                    color="#263940", fontsize=14, clip_on=False, zorder=20)
     low = support.min(axis=0)
     high = support.max(axis=0)
     span = np.maximum(high-low, .5)
@@ -190,9 +243,10 @@ def covariance_3d(pair, variance=False, show=True, probability_limit=None,
         setter(ticks)
     ticks = np.unique(np.append(mass, 0)) if probability_limit is None else np.array([0., top])
     ax.set_zticks(ticks if len(ticks) <= 8 else ticks[np.linspace(0, len(ticks)-1, 8).astype(int)])
-    ax.set(xlabel="", ylabel="", xticks=[], yticks=[])
+    ax.set(xlabel="", ylabel="", zlabel="", xticks=[], yticks=[], zticks=[])
     ax.xaxis.line.set_visible(False)
     ax.yaxis.line.set_visible(False)
+    ax.zaxis.line.set_visible(False)
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.pane.set_edgecolor("none")
         axis.pane.fill = False
@@ -210,9 +264,7 @@ def covariance_3d(pair, variance=False, show=True, probability_limit=None,
     # The variance outcomes lie on x=y; look perpendicular to that diagonal
     # so their feet project to one horizontal baseline without perspective.
     ax.view_init(elev=24, azim=-45)
-    label = "variance " if variance else ""
-    default_title = f"{label}{_number(covariance)}" if boxes else ""
-    ax.set_title(default_title if title is None else title, fontsize=12, pad=12)
+    ax.set_title("" if title is None else title, fontsize=12, pad=12)
     ax.tick_params(labelsize=8)
     _format_ticks(fig)
     if show:
@@ -225,13 +277,19 @@ def variance_sum_3d(j: Joint, show=True):
     return variance_reduction_3d(j, show=show, sign=1)
 
 
-def variance_reduction_3d(j: Joint, show=True, sign=-1):
+def variance_reduction_3d(j: Joint, show=True, sign=-1, parts_only=False):
     """Signed volumes for Var(A) + Var(B) - 2 Cov(A,B) = Var(A-B).
 
     Blue squares add volume; red rectangles subtract below the floor.
     Negative covariance contributes upward red volume instead. All panels
     share centered-coordinate scales, so volume comparisons are meaningful.
     """
+    if show:
+        from IPython.display import display
+        from plotly_viz import decomposition_widget
+        widget=decomposition_widget(j,sign,parts_only)
+        display(widget)
+        return widget
     from intro_answers import expect, marginal, transpose
     if not isinstance(j, Joint):
         raise TypeError("Expected Joint with the actual coupling of A and B")
@@ -244,12 +302,14 @@ def variance_reduction_3d(j: Joint, show=True, sign=-1):
     contributions = np.array([p*da**2, p*db**2, 2*sign*p*da*db, p*combined**2])
     totals = contributions.sum(axis=1)
     np.testing.assert_allclose(totals[:3].sum(), totals[3], atol=1e-10)
-    fig = plt.figure(figsize=(10, 8), layout="constrained")
+    fig = plt.figure(figsize=(10, 3.5) if parts_only else (10, 8), layout="constrained")
     fig.set_facecolor("#faf9f5")
     terms = [(da, da, p, "A variance", "#4c8194"),
              (db, db, p, "B variance", "#4c8194"),
              (da, db, 2*sign*p*np.sign(da*db), "cross contribution" if sign == 1 else "control contribution", "#c63737"),
              (combined, combined, p, "sum variance" if sign == 1 else "remaining variance", "#4c8194")]
+    if parts_only:
+        terms = terms[:3]
     extent = max(float(np.max(np.abs(np.r_[da, db, combined]))), .5)
     grouped = []
     for u, v, heights, title, color in terms:
@@ -257,7 +317,7 @@ def variance_reduction_3d(j: Joint, show=True, sign=-1):
         grouped.append((uv[:, 0], uv[:, 1], np.bincount(inverse, weights=heights), title, color))
     height = max(float(np.abs(term[2]).max()) for term in grouped)
     for index, (u, v, heights, title, color) in enumerate(grouped):
-        ax = fig.add_subplot(2, 2, index+1, projection="3d")
+        ax = fig.add_subplot(1, 3, index+1, projection="3d") if parts_only else fig.add_subplot(2, 2, index+1, projection="3d")
         ax.set_facecolor("#faf9f5")
         for dx, dy, dz in zip(u, v, heights):
             if dx != 0 and dy != 0:
@@ -283,7 +343,8 @@ def variance_reduction_3d(j: Joint, show=True, sign=-1):
         ax.set_box_aspect((1, 1, 1))
         ax.view_init(elev=24, azim=-45)
         value = f"{_number(totals[index], signed=True)}" if index == 2 else f"{_number(totals[index])}"
-        ax.set_title(f"{title} {value}", color=color, fontsize=11)
+        if not parts_only:
+            ax.set_title(f"{title} {value}", color=color, fontsize=11)
     _format_ticks(fig)
     if show:
         plt.show()
@@ -311,7 +372,7 @@ def coin_variance_animation(max_flips=20):
         average = coin_average(n)
         np.testing.assert_allclose(average.var(), 1/n, rtol=2e-6, atol=2e-6)
         fig = variance_3d(average, show=False, probability_limit=.5, max_post_labels=5,
-                          title=f"{n} {'flip' if n == 1 else 'flips'} · variance {_number(1/n)}")
+                          title=f"{n} {'flip' if n == 1 else 'flips'}")
         buffer = BytesIO()
         fig.savefig(buffer, format="png", dpi=100)
         buffer.seek(0)
@@ -423,10 +484,16 @@ def pythagorean_variance(x, y):
     return fig
 
 
-def histogram(rv, title="Distribution", target=None, without=None, comparison_labels=None):
+def histogram(rv, title="Distribution", target=None, without=None, comparison_labels=None, show=True):
     """Default discrete-mass view; variance_3d is an explicit alternative."""
+    if show:
+        from IPython.display import display
+        from plotly_viz import histogram_widget
+        widget=histogram_widget(rv,without)
+        display(widget)
+        return widget
     if isinstance(rv, Joint):
-        return joint_histogram(rv)
+        return joint_histogram(rv,show=False)
     rv = _plot_dist(rv)
     if without is not None:
         without = _plot_dist(without)
@@ -434,27 +501,22 @@ def histogram(rv, title="Distribution", target=None, without=None, comparison_la
         return gradient_distribution(rv, title, target, without=without)
     if without is not None:
         return control_comparison(rv, without, comparison_labels)
-    support, mass = _scalar_mass(rv)
-    mean = float(mass @ support)
-    variance = float(mass @ (support-mean)**2)
+    (support, mass), = _range_masses(_scalar_mass(rv))
+    mean = float(rv.mean())
     fig, ax = plt.subplots(figsize=(7, 2.8), layout="constrained")
     fig.set_facecolor("#faf9f5"); ax.set_facecolor("#faf9f5")
     _discrete_dots(ax, support, mass)
-    if len(support) <= 12:
-        ax.set_xticks(support)
     ax.axvline(mean, color="#c63737", linewidth=3)
-    variance_text(ax, variance)
-    ax.spines[["top", "right"]].set_visible(False)
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color("#d3d5d4")
-    ax.tick_params(colors="#53616a", labelsize=9)
+    _minimal_histogram_axes(ax, support)
     _format_ticks(fig)
     plt.show()
     return fig
 
 
-def gradient_distribution(rv, title, target, without=None):
+def gradient_distribution(rv, title, target, without=None, show=True):
     """Exact two-dimensional PMF, one draw, and total gradient variance."""
+    if show:
+        return histogram(rv,without=without)
     rv = _plot_joint(rv)
     if without is not None:
         without = _plot_joint(without)
@@ -506,21 +568,37 @@ def variance_text(ax, variance, without=None, total=False, comparison_labels=Non
                 ha="right", fontsize=9, color="#4c8194")
 
 
+def show_control(pair: Joint, steps: int = 1, decomposition: bool = False, show=True):
+    """Blue: adjusted estimate; white: raw estimate. Report the joint variance terms."""
+    from intro_answers import marginal, transpose, expect, variance, covar, monte_carlo
+    a, b = marginal(pair), marginal(transpose(pair))
+    np.testing.assert_allclose(expect(b), 0, atol=1e-10)
+    var_a, var_b = variance(a)/steps, variance(b)/steps
+    cross = 2*covar(pair)/steps
+    adjusted = monte_carlo(pair.sub(), steps)
+    raw = monte_carlo(a, steps)
+    print("White: raw estimate | Blue: estimate minus control")
+    print(f"Var 1 = {var_a:.6g}; Var 2 = {var_b:.6g}; 2 Cov = {cross:.6g}")
+    print(f"Var(adjusted) = {var_a:.6g} + {var_b:.6g} - ({cross:.6g}) = {variance(adjusted):.6g}")
+    fig = histogram(adjusted, without=raw, show=show)
+    if decomposition:
+        print("Single sample, left to right: Var 1 + Var 2 - 2 Cov")
+        print(f"{variance(a):.6g} + {variance(b):.6g} - ({2*covar(pair):.6g}) = {variance(pair.sub()):.6g}")
+        variance_reduction_3d(pair, parts_only=True)
+    return fig
+
+
 def control_comparison(rv, without, comparison_labels=None):
-    """Overlay exact discrete masses and their exact variances, without bins."""
-    values, mass = _scalar_mass(rv)
-    other, other_mass = _scalar_mass(without)
+    """Overlay masses in shared equal-width bins; the mean remains exact."""
+    (values, mass), (other, other_mass) = _range_masses(
+        _scalar_mass(rv), _scalar_mass(without))
     np.testing.assert_allclose(rv.mean(), without.mean(), rtol=2e-6, atol=2e-6)
     fig, ax = plt.subplots(figsize=(7, 2.8), layout="constrained")
     fig.set_facecolor("#faf9f5"); ax.set_facecolor("#faf9f5")
     _discrete_dots(ax, other, other_mass, "#858b90", hollow=True)
     _discrete_dots(ax, values, mass)
     ax.axvline(float(rv.mean()), color="#c63737", linewidth=3)
-    variance_text(ax, float(rv.var()), without, comparison_labels=comparison_labels)
-    ax.spines[["top", "right"]].set_visible(False)
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color("#d3d5d4")
-    ax.tick_params(colors="#53616a", labelsize=9)
+    _minimal_histogram_axes(ax, np.r_[values, other])
     _format_ticks(fig)
     plt.show()
     return fig

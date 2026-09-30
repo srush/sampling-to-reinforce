@@ -12,7 +12,38 @@
 # ---
 
 # %% [markdown]
-# # RL Puzzles
+# # Reinforce without Randomness
+#
+# Much has been written about how remarkable it is that 
+# language model are pretrained to "predict the next word". 
+# It is underappreciated, though, that RL post-training 
+# is even simpler at heart. The model effectively guesses a 
+# solution and is updated based on how well it does.
+# Mathematically, the REINFORCE objective really is just, 
+#
+
+# update = sum ( guess reward * guess direction )
+ 
+#
+# Even though this is objective is intuitive, 
+# the RL training process is awash in complexity.
+# Read any tutorial and you will get an alphabet soup of 
+# different explanations and tweaks to make it work in practice. Unfortunately like with 
+# many complex systems, 5% of these methods are useful, but 
+# smart (and loud) people disagree on which ones. 
+# 
+# While smartness eludes me, I am quite loud. My hunch is that 
+# reinforce is hard because, unlike pretraining, it involves randomness,
+# and randomness is confusing. There is a programmer mentality to just 
+# code your way to understanding, but that becomes hard when things stop 
+# being deterministic.  
+# 
+# So in this blog, we will do just that. We are going to code our way to 
+# a baby version of reinforce without using any randomness. This is a 
+# bait and switch as we will not be building cool things 
+# like coding agents. Instead the focus is entirely on really boring things like
+# elementary variance reduction techniques. The blog assumes no knowledge of RL or 
+# math. The text and comments are written by a person, the code is written by AI. 
 
 # %% tags=["hide"]
 import jax
@@ -26,46 +57,64 @@ from IPython.display import display
 # %% tags=["hide"]
 from dist_types import Var, Joint
 from intro_answers import (
-    shift, expect, six_from_eight, variance, indep, shared, marginal, covar,
+    square, expect, six_from_eight, variance, indep, shared, marginal, covar,
     transpose, add, sub, mul, div, monte_carlo, four_sides, six_sides,
-    two_dice, triangular, circle, single_sample, ten_samples, linear_control,
+    two_triangles, triangular, circle, single_sample, ten_samples, linear_control,
     independent_two_variables,
     quadratic_control, marginal_control, two_variables, additive, weighted_die, ab_sampling, ab_test, kl_estimate,
     kl_k3, kl_topk, markov_chain, markov_unigram, group_rewards, group_variance, reinforce, reinforce_loo,
     fit_cuped, fit_baseline, estimated_baseline, topk, propagate,
     binary_policy, score, gradient_pair, loo_control,
 )
-from viz import histogram, variance_reduction_3d, variance_sum_3d, joint_top_view
+from viz import histogram, variance_reduction_3d, variance_sum_3d, joint_top_view, show_control
 
 # %% [markdown]
-# ## Section 1 · Random Variables
+# ## Section 1 · Discrete Random Variables
 #
-# A `Var` stores possible values and their probabilities.
-# `x.op(f)` transforms each value and combines equal results.
-# `x.cond(predicate)` keeps matching values and renormalizes their probabilities.
-# The accepted event must have positive probability.
 
+
+# We are going to start from scratch by implementing a mini-language for 
+# working with random variables. Our language will allow use to apply 
+# some basic operations on these variables and propagate key properties. 
+# There is, obviously, some confusion in the terminology, as these are random 
+# in the statistical sense, but will not require drawing pseudorandom values in 
+# the CS sense. 
+
+#
+# The main object in the language is a finite-sized, discrete random variable. 
+# It is represented by aligned arrays of values and probabilities. 
+# We visualize it as a histogram.
+
+# $$ $$ 
 # %%
-eight = Var(np.arange(1, 9), np.array([1, 3, 1, 3, 1, 3, 1, 3])/16)
+eight = Var(np.arange(1, 9), 
+            np.array([1, 3, 1, 3, 1, 3, 1, 3])/16)
+
 histogram(eight)
-histogram(eight.op(lambda a: a * 2))
 
 # %% [markdown]
-# ## Exercise · shift
-#
-# Shift a random variable by a constant.
-#
-# $$
-# Y=X+c
-# $$
+
+# We can transform random variables to create new ones. 
+# Mathematically, this is written, 
+
+# $$ $$ 
+
+# However, to make it more clear what is going on we write it 
+# as an explicit map over values. 
+
+# We also define a filter over values that renomalizes the distribution. 
 
 # %%
-histogram(shift(eight, 2))
+
+histogram(eight.op(lambda a: a * 2))
+histogram(eight.cond(lambda a: a < 10))
+
 
 # %% [markdown]
-# ## Exercise · expect
-#
-# Compute the expectation from the values and probabilities.
+# 
+# A key operation will be taking an expectation. 
+# This is represented as the red line in the histogram
+# and computed as 
 #
 # $$
 # \mathbb E[X]=\sum_i p_i x_i
@@ -75,42 +124,43 @@ histogram(shift(eight, 2))
 assert expect(eight) == 4.75
 
 # %% [markdown]
-# ## Exercise · six_from_eight
+# ## Exercise · square
 #
-# Start with a fair eight-sided die and obtain a fair six-sided die using `.cond`.
+# Raise each value to the power b, from 0 through 2.
 #
 # $$
-# Y\sim(X\mid X\le6),\qquad \Pr(Y=k)=\frac16,\quad k=1,\ldots,6
+# Y=X^b,\qquad 0\le b\le2
 # $$
 
 # %%
-fair_eight = Var(np.arange(1, 9), np.ones(8)/8)
-die = six_from_eight(fair_eight)
-check("six", die)
+from plotly_viz import square_slider
+display(square_slider(eight))
+
 
 # %% [markdown]
-# ## Exercise · variance
-#
-# Compute the variance using expectation.
+# 
+# The main reason for these definitions is to study variance 
+# which will be the quantity we eventually aim to minimize. 
 #
 # $$
 # \operatorname{Var}(X)=\mathbb E[(X-\mathbb E[X])^2]
 # $$
+#
+
+# The visualization for variance will be a weigted sum of squares. 
+# The base of each box with side length distance from the mean. The height 
+# is the same height as the histogram. If it is helpful, you can think of a random 
+# variable as expectation + noise. The variance is a way of quantifying the noise. 
 
 # %%
 assert np.isclose(variance(eight), 5.1875)
-variance_3d(eight)
+from plotly_viz import scaled_variance_slider
+display(scaled_variance_slider(eight))
 
 # %% [markdown]
 # ## Section 2 · Joint variables
 #
-# A `Joint` stores two sets of values and a probability table:
-# rows correspond to the first variable, columns to the second.
-# `j.op(f, g)` transforms each coordinate while preserving their dependence.
-# `j.add()`, `j.mul()`, and `j.div()` collapse a pair to its sum, product,
-# or ratio. Division requires nonzero denominator values.
-#
-# Here the first coin is fair and the second has probability 3/4 of being 1.
+# 
 
 # %%
 coins = Joint([0, 1], [0, 1], [[1/8, 3/8], [1/8, 3/8]])
@@ -271,18 +321,22 @@ check("weighted", weighted_die([1, 2, 3, 4, 5, 6]), variance_diagram=True)
 # $$
 
 # %% [markdown]
-# ## Two dice
+# ## Two triangles
 #
-# Roll the die twice independently and return the sum.
+# Sample the triangular distribution twice independently and return the sum.
 #
 # $$
-# X,Y\overset{\mathrm{iid}}{\sim}\operatorname{Uniform}\{1,\ldots,6\},
+# X,Y\overset{\mathrm{iid}}{\sim}\operatorname{Triangular}\{0,\ldots,10\},
 # \qquad S=X+Y
 # $$
 
 # %%
-covariance_3d(indep(die, die))
-check("sum", two_dice(die), variance_diagram=True)
+from plotly_viz import covariance_widget
+display(covariance_widget(indep(triangle, triangle)))
+triangle_sum = two_triangles(triangle)
+np.testing.assert_allclose(triangle_sum.probs, np.convolve(triangle.probs, triangle.probs))
+assert np.isclose(expect(triangle_sum), 2 * expect(triangle))
+variance_3d(triangle_sum)
 
 # %% [markdown]
 # ## One sample
@@ -351,11 +405,18 @@ variance_reduction_3d(decomposition)
 # $$
 # \text{Control: }B=3(X-\mathbb E[X]).
 # $$
+#
+# Drag the slider to add nonlinearity while keeping the mean and control fixed.
+# The 3D panels use a fixed view.
+#
+# $$
+# f_\lambda(x)=f(x)+\lambda\bigl[(x-\mathbb E[X])^2-\operatorname{Var}(X)\bigr].
+# $$
 
 # %%
 pair: Joint = linear_control(die, linear_f, b=3)
-histogram(pair)
-covariance_3d(pair)
+from plotly_viz import linear_control_widget
+display(linear_control_widget(die, linear_f, b=3, steps=5))
 
 # %% tags=["hide"]
 check("linear", monte_carlo(sub(pair), 5), plot=False)
@@ -372,9 +433,8 @@ check("linear", monte_carlo(sub(pair), 5), plot=False)
 
 # %%
 pair: Joint = quadratic_control(die, quadratic_f, a=1, b=2)
-covariance_3d(pair)
-check("quadratic", monte_carlo(sub(pair), 5),
-      without=monte_carlo(marginal(pair), 5))
+show_control(pair, steps=5)
+check("quadratic", monte_carlo(sub(pair), 5), plot=False)
 
 # %% [markdown]
 # ## Exercise · marginal_control
@@ -391,10 +451,9 @@ check("quadratic", monte_carlo(sub(pair), 5),
 measurements = Joint([0, 1, 3, 4], [0, 3],
                      [[.25, 0], [.25, 0], [0, .25], [0, .25]])
 pair = marginal_control(measurements)
-covariance_3d(pair)
+show_control(pair, steps=5)
 adjusted = monte_carlo(pair.sub(), 5)
 unadjusted = monte_carlo(marginal(measurements), 5)
-histogram(adjusted, without=unadjusted)
 assert np.isclose(expect(marginal(transpose(pair))), 0)
 assert np.isclose(expect(adjusted), 2)
 assert np.isclose(variance(unadjusted), .5)
@@ -547,10 +606,9 @@ check("kl", k1_samples)
 
 # %%
 pair: Joint = kl_k3(x, p, q)
-covariance_3d(pair)
+show_control(pair, steps=5)
 k3_samples = monte_carlo(sub(pair), 5)
 check("k3", k3_samples, plot=False)
-histogram(k3_samples, without=k1_samples, comparison_labels=("k1", "k3"))
 
 # %% [markdown]
 # ## Exercise · topk
@@ -622,8 +680,8 @@ check("markov", markov_chain(initial_state, T), variance_diagram=True)
 
 # %%
 pair: Joint = markov_unigram(initial_state, T)
-covariance_3d(pair)
-check("unigram", sub(pair), without=marginal(pair))
+show_control(pair)
+check("unigram", sub(pair), plot=False)
 
 # %% [markdown]
 # ## Section 9 · Group Variance
@@ -739,9 +797,9 @@ check("reinforce", reinforce(theta))
 
 # %%
 pair: Joint = reinforce_loo(theta)
-covariance_3d(pair)
+show_control(pair)
 gradient = gradient_pair(sub(pair))
-check("loo", gradient, without=reinforce(theta, n=3))
+check("loo", gradient, plot=False)
 
 # %% [markdown]
 # ## Exercise · fit_baseline
@@ -771,11 +829,9 @@ baseline = fit_baseline(training_rewards)
 
 # %%
 baseline_pair = estimated_baseline(reward, baseline)
-covariance_3d(baseline_pair)
+show_control(baseline_pair, steps=5)
 corrected = monte_carlo(baseline_pair.sub(), 5)
 uncorrected = monte_carlo(marginal(baseline_pair), 5)
-histogram(corrected, without=uncorrected,
-          comparison_labels=("no baseline", "estimated baseline"))
 assert np.isclose(expect(marginal(transpose(baseline_pair))), 0)
 assert np.isclose(expect(corrected), .1875)
 assert variance(corrected) < variance(uncorrected)
@@ -799,7 +855,7 @@ histogram(opposites)
 covariance_3d(opposites)
 
 # %% [markdown]
-# ## Animation · 1–20 coin flips
+# ## Slider · 1–20 coin flips
 #
 # $$
 # X_i\overset{\mathrm{iid}}{\sim}\operatorname{Uniform}\{-1,1\},\quad
@@ -808,4 +864,5 @@ covariance_3d(opposites)
 # $$
 
 # %%
-display(coin_variance_animation(20))
+from plotly_viz import coin_variance_slider
+display(coin_variance_slider(20))
