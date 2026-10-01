@@ -24,6 +24,8 @@ import IPython.display
 def build(profile=False):
     root = Path(__file__).resolve().parent
     notebook = jupytext.read(root / "puzzle.py")
+    local_definitions = {name for cell in notebook.cells if cell.cell_type == "code"
+                         for name in re.findall(r"^def (\w+)\(", cell.source, re.MULTILINE)}
     formatter = HtmlFormatter()
     markdown = MarkdownIt("commonmark")
     def render_markdown(source):
@@ -38,7 +40,7 @@ def build(profile=False):
     section_open = False
     names = ("four_sides", "six_sides", "triangular", "weighted_die", "two_triangles", "monte_carlo",
                          "monte_carlo", "independent_two_variables", "linear_control", "quadratic_control",
-                         "two_variables", "additive", "k1", "k3", "kl_topk",
+                         "two_variables", "additive", "k1", "kl_k3", "kl_topk",
                          "markov_chain", "markov_unigram", "group_rewards", "reinforce", "reinforce_loo")
     titles = ["Four sides","Six sides","Triangular distribution","Weighted dice from fair coins","Two dice","One sample","Monte Carlo · ten samples","Independent two-variable Monte Carlo","A roughly linear control variate","Five samples, a roughly parabolic function","Five samples, two variables","Five samples, an additive function","k1 KL estimate","k3 KL control variate","Unbiased top-k KL","A two-state Markov chain","A unigram control variate","Additive rewards from one model draw","REINFORCE with a two-dimensional gradient","REINFORCE with leave-one-out"]
     titles[4] = "Two triangles"
@@ -46,6 +48,7 @@ def build(profile=False):
     # These estimators are defined in the visible notebook cells.
     answers.pop("k1 KL estimate")
     answers.pop("k3 KL control variate")
+    answers.pop("REINFORCE with leave-one-out")
     question_ids = {title: f"puzzle-{i}" for i, title in enumerate(titles, 1)}
     # Keep later puzzle IDs stable while removing this example from the page.
     answers.pop("Five samples, an additive function")
@@ -79,7 +82,7 @@ def build(profile=False):
                     sections.append(render_markdown(cell.source))
                     if heading.startswith(("Exercise · ", "Helper · ")):
                         name = heading.split(" · ", 1)[1]
-                        if hasattr(intro_answers, name):
+                        if name not in local_definitions and hasattr(intro_answers, name):
                             sections.append(code(inspect.getsource(getattr(intro_answers, name))))
                     if heading not in answers:
                         continue
@@ -93,7 +96,7 @@ def build(profile=False):
                     sections.append(render_markdown(cell.source))
                     if cell.source.startswith(("### Exercise · ", "### Helper · ")):
                         name = cell.source.splitlines()[0].split(" · ", 1)[1]
-                        if hasattr(intro_answers, name):
+                        if name not in local_definitions and hasattr(intro_answers, name):
                             sections.append(code(inspect.getsource(getattr(intro_answers, name))))
             elif cell.cell_type == "code":
                 output = StringIO()
@@ -117,20 +120,36 @@ def build(profile=False):
     if section_open:
         sections.append("</section>")
     css = """
-    :root{color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#faf9f5;color:#24353c;
-    font:16px/1.65 system-ui,-apple-system,sans-serif}header{padding:22px 6vw;border-bottom:1px solid #deded6;
-    display:flex;justify-content:space-between;gap:20px}header span{font-size:13px;color:#6c787c}
-    nav{display:flex;gap:14px;flex-wrap:wrap}a{color:#3e7486;text-decoration:none}main{max-width:920px;margin:auto;padding:35px 28px 80px}
-    h1{font-size:42px;letter-spacing:-1.4px;line-height:1.15}h2{font-size:26px;letter-spacing:-.5px}
-    .intro{margin-bottom:44px}.puzzle{border-top:1px solid #d8dcd9;padding:24px 0 32px;scroll-margin-top:20px}
-    .math{overflow-x:auto;margin:20px 0 26px}
-    p{max-width:78ch}code{font-size:.9em}p code{background:#eaf0ed;border-radius:4px;padding:2px 5px}
-    .highlight{background:#eef1ed!important;padding:14px 18px;border-radius:9px;overflow:auto}
-    pre{margin:0;font:13px/1.6 ui-monospace,Menlo,monospace}details{margin:16px 0}
-    summary{cursor:pointer;font-size:13px;color:#52696b;font-weight:600;margin-bottom:7px}
-    .passed{font-size:13px;color:#367052;background:#eaf1e8;border-radius:6px;padding:8px 12px}
-    img{display:block;width:100%;height:auto;margin:20px 0 0}footer{color:#708084;font-size:12px;padding-top:25px}
-    @media(max-width:600px){header{display:block}nav{margin-top:12px}main{padding:20px 16px}h1{font-size:32px}}
+    /* Article styling follows srush/lean-transformer's Tufte/Verso theme. */
+    :root{color-scheme:light;font-size:15px}*{box-sizing:border-box}
+    body{margin:0;background:#fff;color:#404444;
+      font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+      font-size:1.2rem;line-height:1.6}
+    main{width:58rem;max-width:100%;margin:auto;padding:0 2rem 8rem}
+    header{display:none}
+    a{color:#305c78;text-decoration:underline;text-underline-offset:.15em;text-decoration-thickness:1px}
+    a:hover{background:#edf2f5}a:focus-visible,summary:focus-visible{outline:2px solid #305c78;outline-offset:3px}
+    h1,h2,h3{font-weight:400;line-height:1.15}
+    h1{font-size:3.2rem;margin:3rem 0 1.5rem}
+    h2{font-size:2.2rem;margin:3rem 0 1rem}
+    h3{font-size:1.7rem;margin:2rem 0 1rem}
+    .intro{margin-bottom:1.8rem}.puzzle{padding:1rem 0;scroll-margin-top:1.5rem}
+    p{margin:1.4rem 0}ul,ol{padding-left:2rem}li{margin:.6rem 0}
+    .math{overflow-x:auto;margin:1.5rem 0;font-size:1.2rem}
+    code,pre{font-family:Consolas,'Liberation Mono',Menlo,monospace}
+    :not(pre)>code{font-size:.8em;background:#f4f4f4;padding:.1em .2em}
+    .highlight{background:#f8f8f8!important;border:1px solid #e5e5e5;
+      padding:1rem 1.2rem;margin:1.4rem 0;overflow-x:auto;border-radius:0}
+    pre{margin:0;font-size:1rem;line-height:1.5;tab-size:4}
+    pre.output{color:#666;font-size:.9rem;white-space:pre-wrap;overflow-wrap:anywhere;margin:1rem 0 1.5rem}
+    details{margin:1.4rem 0}summary{cursor:pointer;color:#666;font-size:1.1rem}
+    .passed{font-size:1rem;color:#367052;padding:.5rem 0}
+    img{display:block;max-width:100%;height:auto;margin:1.4rem 0}
+    blockquote{border-left:4px solid #ccc;margin:2rem 0;padding:0 2rem}
+    footer{color:#666;font-size:1rem;padding-top:2rem}
+    @media(max-width:768px){main{padding:0 1.2rem 4rem}h1{font-size:2.6rem}
+      h2{font-size:2rem}.highlight{padding:.8rem}}
+    @media print{main{width:100%;padding:0}.highlight{overflow:visible}pre{white-space:pre-wrap}}
     """
     navigation = ''.join(f'<a href="#{escape(anchor)}">{escape(label)}</a>'
                          for anchor, label in section_nav)

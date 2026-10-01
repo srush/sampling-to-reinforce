@@ -2,7 +2,7 @@
 from typing import Callable
 from operator import index
 import numpy as np
-from dist_types import Var, Joint, _joint
+from dist_types import Fn, Var, Joint, _joint
 
 
 def uniform(a: int, b: int) -> Var:
@@ -81,7 +81,7 @@ def iid_statistic(draw: Var, steps: int,
     ))), 12))
 
 
-def op(f: Callable[[float], float], x: Var) -> Var:
+def op(f: Fn, x: Var) -> Var:
     values = np.array([f(a) for a in x.values])
     support, inverse = np.unique(values, return_inverse=True)
     return Var(support, np.bincount(inverse, weights=x.probs))
@@ -109,7 +109,7 @@ def binop(f: Callable[[float, float], float], j: Joint) -> Var:
 Joint._binop = lambda self, f: binop(f, self)
 
 
-def op_joint(f: Callable[[float], float], g: Callable[[float], float],
+def op_joint(f: Fn, g: Fn,
                 j: Joint) -> Joint:
     xs = np.array([f(x) for x in j._x])
     ys = np.array([g(y) for y in j._y])
@@ -140,17 +140,13 @@ def sub(j: Joint) -> Var:
     return j._binop(lambda x, y: x-y)
 
 
-def mul(j: Joint) -> Var:
-    return j._binop(lambda x, y: x*y)
-
-
 def div(j: Joint) -> Var:
     return j._binop(lambda x, y: x/y)
 
 
 Joint.add = lambda self: add(self)
 Joint.sub = lambda self: sub(self)
-Joint.mul = lambda self: mul(self)
+Joint.mul = lambda self: self._binop(lambda x, y: x*y)
 Joint.div = lambda self: div(self)
 
 
@@ -176,15 +172,15 @@ def six_sides(coin: Var) -> Var:
     return eight.cond(lambda a: a <= 6)
 
 
-def monte_carlo(x: Var, steps: int) -> Var:
-    total = uniform(0, 1)
+def monte_carlo(f_x: Var, steps: int) -> Var:
+    total = f_x.op(lambda value: 0)
     for _ in range(steps):
-        total = add(indep(total, x))
-    return div(indep(total, uniform(steps, steps + 1)))
+        total = add(indep(total, f_x))
+    return total.op(lambda value: value / steps)
 
 
-def control_variate(x: Var, f: Callable[[float], float],
-                    h: Callable[[float], float], known_mean: float,
+def control_variate(x: Var, f: Fn,
+                    h: Fn, known_mean: float,
                     b: float = 1) -> Joint:
     """Pair f(X) with b*(h(X)-known_mean), using the same draw of X."""
     return shared(x).op(f, lambda a: b*(h(a)-known_mean))
@@ -192,27 +188,6 @@ def control_variate(x: Var, f: Callable[[float], float],
 
 def monte_carlo_with_control(pair: Joint, steps: int) -> Var:
     return monte_carlo(pair.sub(), steps)
-
-
-def post_stratify(draw: Var, steps: int, red_share: float,
-                  group: Callable[[float], int], response: Callable[[float], float],
-                  fallback: float = 0) -> Var:
-    """Draw people first; fit group means using only the other sampled responses."""
-    def estimate(samples):
-        observations = [(int(group(person)), response(person)) for person in samples]
-        counts = [sum(h == g for h, y in observations) for g in (0, 1)]
-        totals = [sum(y for h, y in observations if h == g) for g in (0, 1)]
-        adjusted = []
-        for h, answer in observations:
-            means = []
-            for g in (0, 1):
-                count = counts[g] - (h == g)
-                total = totals[g] - (answer if h == g else 0)
-                means.append(total/count if count else fallback)
-            center = (1-red_share)*means[0] + red_share*means[1]
-            adjusted.append(answer - means[h] + center)
-        return sum(adjusted)/len(adjusted)
-    return iid_statistic(draw, steps, estimate, symmetric=True)
 
 
 def stratify(red_responses: Var, blue_responses: Var,
@@ -223,11 +198,11 @@ def stratify(red_responses: Var, blue_responses: Var,
     return indep(red_poll, blue_poll)._binop(lambda r, b: red_share*r + (1-red_share)*b)
 
 
-def linear_control(x: Var, f: Callable[[float], float], b: float) -> Joint:
+def linear_control(x: Var, f: Fn, b: float) -> Joint:
     return control_variate(x, f, lambda a: a, expect(x), b)
 
 
-def quadratic_control(x: Var, f: Callable[[float], float], a: float, b: float) -> Joint:
+def quadratic_control(x: Var, f: Fn, a: float, b: float) -> Joint:
     h = lambda z: a*z*z + b*z
     center = expect(x.op(h))
     return control_variate(x, f, h, center)
@@ -250,7 +225,7 @@ def independent_two_variables(x: Var, y: Var,
     return monte_carlo(sample, 5)
 
 
-def additive(x: Var, f: Callable[[float], float],
+def additive(x: Var, f: Fn,
              g: Callable[[float, float], float]) -> Var:
     offset = expect(x.op(f))
     return add(indep(two_variables(x, g), Var([offset], [1.0])))
@@ -287,22 +262,22 @@ def weighted_die(weights: list[int]) -> Var:
     return accepted.op(lambda a: np.searchsorted(edges, a, side="right") + 1)
 
 
-def ab_sampling(population: Var, treatment: Callable[[float], float],
-                control: Callable[[float], float], steps: int) -> Var:
-    treated = monte_carlo(population.op(treatment), steps)
-    untreated = monte_carlo(population.op(control), steps)
-    return indep(treated, untreated).sub()
+def ab_sampling(population: Var, treated: Fn,
+                untreated: Fn, steps: int) -> Var:
+    treated_estimate = monte_carlo(population.op(treated), steps)
+    untreated_estimate = monte_carlo(population.op(untreated), steps)
+    return indep(treated_estimate, untreated_estimate).sub()
 
 
-def ab_test(population: Var, treatment: Callable[[float], float],
-            control: Callable[[float], float], initial: Callable[[float], float],
+def ab_test(population: Var, treated: Fn,
+            untreated: Fn, initial: Fn,
             b: float, steps: int) -> Var:
     center = expect(population.op(initial))
-    treated_pair = control_variate(population, treatment, initial, center, b)
-    untreated_pair = control_variate(population, control, initial, center, b)
-    treated = monte_carlo_with_control(treated_pair, steps)
-    untreated = monte_carlo_with_control(untreated_pair, steps)
-    return indep(treated, untreated).sub()
+    treated_pair = control_variate(population, treated, initial, center, b)
+    untreated_pair = control_variate(population, untreated, initial, center, b)
+    treated_estimate = monte_carlo_with_control(treated_pair, steps)
+    untreated_estimate = monte_carlo_with_control(untreated_pair, steps)
+    return indep(treated_estimate, untreated_estimate).sub()
 
 
 def fit_cuped(initial: np.ndarray, outcome: np.ndarray) -> float:
@@ -311,8 +286,8 @@ def fit_cuped(initial: np.ndarray, outcome: np.ndarray) -> float:
     return float(np.linalg.lstsq(z[:, None], y, rcond=None)[0][0])
 
 
-def cuped(population: Var, outcome: Callable[[float], float],
-          initial: Callable[[float], float], known_mean: float, steps: int) -> Var:
+def cuped(population: Var, outcome: Fn,
+          initial: Fn, known_mean: float, steps: int) -> Var:
     """Full sampling distribution with leave-one-out fits; steps >= 2."""
     def estimate(samples):
         z = np.array([initial(person) for person in samples])
@@ -359,15 +334,19 @@ def k2(p: Var, q: Var) -> Var:
     return p.op(lambda a: 0.5 * (p.log_prob(a) - q.log_prob(a))**2)
 
 
+def kl_k3(p: Var, q: Var) -> Joint:
+    """Pair the KL target and zero-mean control; p and q share positive support."""
+    return control_variate(
+        p, lambda a: p.log_prob(a) - q.log_prob(a),
+        lambda a: q.prob(a) / p.prob(a), known_mean=1, b=-1)
+
+
 def k3(p: Var, q: Var) -> Var:
     """KL estimate with a zero-mean control; p and q share positive support."""
-    pair = control_variate(
-        p, lambda a: p.log_prob(a) - q.log_prob(a),
-        lambda a: 1 - q.prob(a) / p.prob(a), known_mean=0)
-    return pair.sub()
+    return kl_k3(p, q).sub()
 
 
-def topk(x: Var, f: Callable[[float], float], k: int) -> Var:
+def topk(x: Var, f: Fn, k: int) -> Var:
     x = x.op(lambda a: a)
     if not 0 <= k <= len(x.values):
         raise ValueError("k must be between zero and the support size")
@@ -378,12 +357,25 @@ def topk(x: Var, f: Callable[[float], float], k: int) -> Var:
 
 
 def kl_topk(p: Var, q: Var, k: int) -> Var:
+    """On-policy value estimator from Algorithm 1 of arXiv:2602.04417."""
     if not np.isfinite(kl(p, q)):
         raise ValueError("q must assign positive probability wherever p does")
-    return topk(p, lambda a: np.log(p.prob(a)/q.prob(a)) if p.prob(a) else 0.0, k)
+    p = p.op(lambda a: a)  # Combine repeated outcomes before ranking.
+    if not 0 <= k <= len(p.values):
+        raise ValueError("k must be between zero and the support size")
+    indices = np.argsort(-p.probs, kind="stable")[:k]
+    top = p.values[indices]  # Select by p(a), before computing any KL terms.
+
+    def log_ratio(a):
+        return p.log_prob(a) - q.log_prob(a) if p.prob(a) else 0.0
+
+    exact = sum(p.prob(a)*log_ratio(a) for a in top)
+    # X ~ p over the full support; mask the sampled term when X is in top.
+    sampled = p.op(lambda a: 0.0 if a in top else log_ratio(a))
+    return sampled.op(lambda tail: exact + tail)
 
 
-def group_rewards(model: Var, reward_a: Callable[[float], float], reward_b: Callable[[float], float]) -> Joint:
+def group_rewards(model: Var, reward_a: Fn, reward_b: Fn) -> Joint:
     return shared(model).op(reward_a, reward_b)
 
 
@@ -453,3 +445,77 @@ def reinforce_loo(theta: np.ndarray, n: int = 3) -> Joint:
     fraction = monte_carlo(action, n)
     return shared(fraction).op(lambda m: m*score(1, p),
                                lambda m: loo_control(m, p, n))
+
+
+def temperature_policy(temperature: float) -> Var:
+    """Eight classes with fixed logits 0,...,7 and positive temperature."""
+    if not np.isfinite(temperature) or temperature <= 0:
+        raise ValueError("Temperature must be finite and positive")
+    logits = np.arange(8, dtype=float)
+    weights = np.exp((logits - logits.max()) / temperature)
+    return Var(logits, weights / weights.sum())
+
+
+def temperature_score(action: float, mean_action: float, temperature: float) -> float:
+    """Derivative of log p_T(action) with respect to T."""
+    return (mean_action - action) / temperature**2
+
+
+def temperature_reinforce(temperature: float, n: int = 1) -> Var:
+    action = temperature_policy(temperature)
+    mean_action = expect(action)
+    return monte_carlo(action.op(
+        lambda a: a * temperature_score(a, mean_action, temperature)), n)
+
+
+def reinforce_control(r: Fn, b: float, score: Joint) -> Var:
+    """Subtract a constant baseline from the reward, then multiply by the score."""
+    return score.op(lambda a: r(a) - b, lambda s: s).mul()
+
+
+def leave_one_out(temperature: float, n: int = 3, seed: int | None = 11) -> float:
+    """Mean reward of n-1 independent other draws; rewards equal class indices."""
+    if n < 2:
+        raise ValueError("Leave-one-out needs at least two samples")
+    action = temperature_policy(temperature)
+    others = np.random.default_rng(seed).choice(
+        action.values, size=n-1, p=action.probs)
+    return float(others.mean())
+
+
+def _leave_one_out_gradient(r: Fn, score: Joint, n: int = 3) -> Var:
+    """Enumerate independent batches and apply a constant baseline to each draw."""
+    from itertools import product
+    if n < 2:
+        raise ValueError("Leave-one-out needs at least two samples")
+    rows, cols = np.nonzero(score.probs)
+    actions, scores = score._x[rows], score._y[cols]
+    mass = score.probs[rows, cols]
+    estimates, probabilities = [], []
+    for indices in product(range(len(mass)), repeat=n):
+        rewards = np.array([r(actions[i]) for i in indices])
+        adjusted = []
+        for position, i in enumerate(indices):
+            baseline = float(np.mean(np.delete(rewards, position)))
+            draw = Joint([actions[i]], [scores[i]], [[1.0]])
+            adjusted.append(expect(reinforce_control(r, baseline, draw)))
+        estimates.append(float(np.mean(adjusted)))
+        probabilities.append(float(np.prod(mass[list(indices)])))
+    return Var(estimates, probabilities)
+
+
+def temperature_loo(temperature: float, n: int = 3) -> Var:
+    """Compatibility wrapper for the temperature-policy example."""
+    action = temperature_policy(temperature)
+    score = shared(action).op(
+        lambda a: a,
+        lambda a: temperature_score(a, expect(action), temperature))
+    return _leave_one_out_gradient(lambda a: a, score, n)
+
+
+def temperature_baseline(temperature: float, baseline: float) -> Joint:
+    action = temperature_policy(temperature)
+    mean_action = expect(action)
+    return shared(action).op(
+        lambda a: a * temperature_score(a, mean_action, temperature),
+        lambda a: baseline * temperature_score(a, mean_action, temperature))

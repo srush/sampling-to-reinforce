@@ -116,8 +116,8 @@ def _minimal_histogram_axes(ax, values):
 
 def _geometry_axes():
     fig, ax = _pyplot().subplots(figsize=(7, 3.5), layout="constrained")
-    fig.set_facecolor("#faf9f5")
-    ax.set_facecolor("#faf9f5")
+    fig.set_facecolor("#ffffff")
+    ax.set_facecolor("#ffffff")
     ax.set_aspect("equal")
     ax.axis("off")
     return fig, ax
@@ -142,8 +142,8 @@ def joint_top_view(j: Joint, show=True):
     x, y = np.meshgrid(j._x, j._y, indexing="ij")
     keep = j.probs > 0
     fig, ax = _pyplot().subplots(figsize=(6, 6), layout="constrained")
-    fig.set_facecolor("#faf9f5")
-    ax.set_facecolor("#faf9f5")
+    fig.set_facecolor("#ffffff")
+    ax.set_facecolor("#ffffff")
     ax.scatter(x[~keep], y[~keep], marker="x", s=20, color="#d3d5d4", linewidths=1)
     ax.scatter(x[keep], y[keep], s=80*j.probs[keep]/j.probs.max(),
                color="#4c8194", edgecolors="black", linewidths=.5)
@@ -199,9 +199,9 @@ def covariance_3d(pair, variance=False, show=True, probability_limit=None,
     deviations = support-center
     covariance = float(mass @ (deviations[:, 0]*deviations[:, 1]))
     fig = _pyplot().figure(figsize=(8, 5.8), layout="constrained")
-    fig.set_facecolor("#faf9f5")
+    fig.set_facecolor("#ffffff")
     ax = fig.add_subplot(111, projection="3d", computed_zorder=False)
-    ax.set_facecolor("#faf9f5")
+    ax.set_facecolor("#ffffff")
     def box_edges(corners, color, width):
         for i, j in ((0, 1), (1, 2), (2, 3), (3, 0),
                      (4, 5), (5, 6), (6, 7), (7, 4),
@@ -308,7 +308,7 @@ def variance_reduction_3d(j: Joint, show=True, sign=-1, parts_only=False):
     totals = contributions.sum(axis=1)
     np.testing.assert_allclose(totals[:3].sum(), totals[3], atol=1e-10)
     fig = _pyplot().figure(figsize=(10, 3.5) if parts_only else (10, 8), layout="constrained")
-    fig.set_facecolor("#faf9f5")
+    fig.set_facecolor("#ffffff")
     terms = [(da, da, p, "A variance", "#4c8194"),
              (db, db, p, "B variance", "#4c8194"),
              (da, db, 2*sign*p*np.sign(da*db), "cross contribution" if sign == 1 else "control contribution", "#c63737"),
@@ -323,7 +323,7 @@ def variance_reduction_3d(j: Joint, show=True, sign=-1, parts_only=False):
     height = max(float(np.abs(term[2]).max()) for term in grouped)
     for index, (u, v, heights, title, color) in enumerate(grouped):
         ax = fig.add_subplot(1, 3, index+1, projection="3d") if parts_only else fig.add_subplot(2, 2, index+1, projection="3d")
-        ax.set_facecolor("#faf9f5")
+        ax.set_facecolor("#ffffff")
         for dx, dy, dz in zip(u, v, heights):
             if dx != 0 and dy != 0:
                 ax.bar3d(min(0, dx), min(0, dy), min(0, dz),
@@ -509,7 +509,7 @@ def histogram(rv, title="Distribution", target=None, without=None, comparison_la
     (support, mass), = _range_masses(_scalar_mass(rv))
     mean = float(rv.mean())
     fig, ax = _pyplot().subplots(figsize=(7, 2.8), layout="constrained")
-    fig.set_facecolor("#faf9f5"); ax.set_facecolor("#faf9f5")
+    fig.set_facecolor("#ffffff"); ax.set_facecolor("#ffffff")
     _discrete_dots(ax, support, mass)
     ax.axvline(mean, color="#c63737", linewidth=3)
     _minimal_histogram_axes(ax, support)
@@ -553,7 +553,7 @@ def gradient_distribution(rv, title, target, without=None, show=True):
     support, inverse = np.unique(np.round(values, 8), axis=0, return_inverse=True)
     mass = np.bincount(inverse, weights=weights)
     fig, ax = _pyplot().subplots(figsize=(7, 4.2), layout="constrained")
-    fig.set_facecolor("#faf9f5"); ax.set_facecolor("#faf9f5")
+    fig.set_facecolor("#ffffff"); ax.set_facecolor("#ffffff")
     if without is not None:
         other, other_mass = (np.asarray(a) for a in without.table())
         other_support, other_inverse = np.unique(np.round(other, 8), axis=0, return_inverse=True)
@@ -618,7 +618,7 @@ def control_comparison(rv, without, comparison_labels=None):
         _scalar_mass(rv), _scalar_mass(without))
     np.testing.assert_allclose(rv.mean(), without.mean(), rtol=2e-6, atol=2e-6)
     fig, ax = _pyplot().subplots(figsize=(7, 2.8), layout="constrained")
-    fig.set_facecolor("#faf9f5"); ax.set_facecolor("#faf9f5")
+    fig.set_facecolor("#ffffff"); ax.set_facecolor("#ffffff")
     _discrete_dots(ax, other, other_mass, "#858b90", hollow=True)
     _discrete_dots(ax, values, mass)
     ax.axvline(float(rv.mean()), color="#c63737", linewidth=3)

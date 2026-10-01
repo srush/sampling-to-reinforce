@@ -1,7 +1,11 @@
 """Array containers for the introductory exercises; no arithmetic or lineage."""
 from dataclasses import dataclass
+from typing import Callable
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+
+
+Fn = Callable[[float], float]
 
 
 def _values(values: ArrayLike) -> NDArray[np.float64]:

@@ -14,7 +14,8 @@ acceptance for the specified heights.
 filled-in function exercises. `shared(x)` makes a diagonal joint and `indep(x, y)`
 makes an outer-product joint. `x.op(f)` transforms an `Var` into an `Var`;
 `x.cond(predicate)` filters and renormalizes it.
-`binop(f, joint)` collapses a `Joint` to a `Var`; `add`, `sub`, `mul`, and `div` specialize it.
+`binop(f, joint)` collapses a `Joint` to a `Var`; `add`, `sub`, and `div` specialize it.
+Use `joint.mul()` to multiply the paired values.
 `div` requires nonzero denominator values.
 `j.op(f, g)` transforms each coordinate and retains the joint,
 merging duplicate rows and columns. Use `shared(x).op(F, G)` for
@@ -24,12 +25,14 @@ the probability table. `marginal(j)` keeps the first coordinate; use
 Plotting accepts these containers directly.
 Control-variate functions return `Joint` of `(estimate, zero-mean control)`.
 Use `sub(pair)` to correct the estimate, then `monte_carlo` when averaging is needed.
-For leave-one-out the pair describes the second gradient component; its negative
-is the first component. Both are reconstructed after subtraction.
+The final REINFORCE section uses eight classes with fixed logits `0,...,7`,
+rewards equal to class indices, and one positive temperature parameter `T`.
+The policy is `softmax(logits / T)` and the scalar score is `(E[A] - a) / T**2`.
+The `temperature_*` helpers implement the policy, gradient, leave-one-out control,
+and fitted baseline. Leave-one-out directly subtracts the mean of the other
+rewards from each reward, multiplies by its score, and averages the results.
 `monte_carlo(x, steps)` averages independent copies. `condition` filters and
-renormalizes an `Var`. Binary-policy gradients use `Joint` to retain both
-dependent gradient components. The leave-one-out example uses the exact binary
-reward identity based on the sampled fraction of ones (not a general policy estimator).
+renormalizes an `Var`. Earlier binary-policy helpers remain available for regression tests.
 The older JAX implementation remains in `puzzles.py` and `distribution.py` for
 reference and regression tests. Run `python -m unittest test_intro.py test_puzzles.py`.
 
@@ -39,7 +42,7 @@ distribution and variance-reduction exercises. `intro_answers.py` contains the a
 notebook histograms and two-dimensional gradient plots. Every estimator is also
 checked for unbiasedness. The final six exercises cover weighted dice from fair
 coins, Monte Carlo KL, Markov chains and a coupled unigram control variate,
-and two-parameter REINFORCE with and without leave-one-out baselines.
+and temperature-parameter REINFORCE with leave-one-out and fitted baselines.
 Previous experiments are preserved in `backup/`.
 
 ```bash
@@ -71,6 +74,8 @@ directly, run `.venv/bin/python preview.py --watch-only` to rebuild on each save
 reload that file tab to see changes. For a one-time export, run
 `.venv/bin/python build_html.py`; it writes `build/index.html`. Add `--profile`
 to see the slowest notebook cells.
+If a build fails, the watcher reports the error, keeps the last successful HTML,
+and retries on the next save. It also keeps running if the initial build fails.
 The HTML build uses Plotly. Matplotlib is only needed for the older static plot
 functions and their tests; install it with `.venv/bin/python -m pip install -e '.[static-plots]'` if needed.
 

@@ -2,10 +2,49 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 from dist_types import Var, Joint
-from intro_answers import expect, uniform, shared, indep, op, binop, op_joint, add, mul, marginal, transpose, covar
+from intro_answers import expect, uniform, shared, indep, op, binop, op_joint, add, marginal, transpose, covar
 
 
 class IntroTests(unittest.TestCase):
+    def test_temperature_gradients(self):
+        from itertools import product
+        import intro_answers as a
+        from checks import assert_distribution
+        for temperature in (0.7, 3.0, 8.0):
+            action = a.temperature_policy(temperature)
+            self.assertEqual(len(action.values), 8)
+            delta = 1e-5
+            derivative = (expect(a.temperature_policy(temperature + delta))
+                          - expect(a.temperature_policy(temperature - delta))) / (2 * delta)
+            scores = np.array([a.temperature_score(x, expect(action), temperature)
+                               for x in action.values])
+            numerical_scores = (np.log(a.temperature_policy(temperature + delta).probs)
+                                - np.log(a.temperature_policy(temperature - delta).probs)) / (2 * delta)
+            np.testing.assert_allclose(scores, numerical_scores, atol=1e-8)
+            self.assertAlmostEqual(float(action.probs @ scores), 0)
+            self.assertAlmostEqual(expect(a.temperature_reinforce(temperature, 3)), derivative)
+            for n in (2, 3):
+                values, masses = [], []
+                for outcomes in product(range(8), repeat=n):
+                    r = np.array(outcomes, dtype=float)
+                    s = scores[list(outcomes)]
+                    # Independent pairwise expression for the LOO gradient.
+                    values.append(sum((r[i] - r[j]) * (s[i] - s[j])
+                                      for i in range(n) for j in range(i + 1, n)) / (n * (n - 1)))
+                    masses.append(np.prod(action.probs[list(outcomes)]))
+                gradient = a.temperature_loo(temperature, n)
+                assert_distribution(gradient, np.array(values), np.array(masses))
+                self.assertAlmostEqual(expect(gradient), derivative)
+            for baseline in (0., expect(action), -2.):
+                pair = a.temperature_baseline(temperature, baseline)
+                self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
+                self.assertAlmostEqual(expect(pair.sub()), derivative)
+        for temperature in (0., -1., np.inf, np.nan):
+            with self.assertRaises(ValueError):
+                a.temperature_policy(temperature)
+        with self.assertRaises(ValueError):
+            a.temperature_loo(3., 1)
+
     def setUp(self):
         self.x = Var([-1, 1], [.5, .5])
         self.y = Var([0, 2, 5], [.2, .3, .5])
@@ -186,6 +225,11 @@ class IntroTests(unittest.TestCase):
         self.assertEqual(a.kl(Var([2, 2], [.3, .7]), Var([2], [1])), 0)
         self.assertAlmostEqual(expect(estimate), target)
         corrected = a.k3(p, q)
+        pair = a.kl_k3(p, q)
+        self.assertIsInstance(pair, Joint)
+        self.assertAlmostEqual(expect(marginal(pair)), target)
+        self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
+        self.assertDist(pair.sub(), corrected.values, corrected.probs)
         self.assertAlmostEqual(expect(corrected), target)
         self.assertTrue(np.all(corrected.values[corrected.probs > 0] >= -1e-12))
         squared = a.k2(p, q)
@@ -252,6 +296,20 @@ class IntroTests(unittest.TestCase):
         result = a.kl_topk(p, q, 1)
         exact = .7*np.log(.7/.4)
         self.assertDist(result, [exact+np.log(.3/.6), exact], [.3, .7])
+
+    def test_topk_kl_selects_by_p_probability(self):
+        import intro_answers as a
+        p = Var([0, 1, 2], [.6, .3, .1])
+        q = Var([0, 1, 2], [.89, .1, .01])
+        # Outcome 0 has the highest p, but outcome 1 contributes the most KL.
+        terms = p.probs * np.log(p.probs / q.probs)
+        self.assertEqual(int(np.argmax(terms)), 1)
+        exact = terms[0]
+        expected = p.op(lambda x: exact + (0 if x == 0 else
+                                           p.log_prob(x) - q.log_prob(x)))
+        actual = a.kl_topk(p, q, 1)
+        self.assertDist(actual, expected.values, expected.probs)
+        self.assertAlmostEqual(expect(actual), a.kl(p, q))
 
     def test_circle_rejection(self):
         from intro_answers import circle
@@ -571,6 +629,43 @@ class IntroTests(unittest.TestCase):
         self.assertIn('Coin flips:',html)
         self.assertIn('"fixedrange":true',html)
 
+    def test_ab_control_slider(self):
+        from plotly_viz import ab_control_frames
+        from intro_answers import ab_test, variance
+        population=uniform(0,4)
+        initial=lambda person: -.25*(person % 2)
+        untreated=lambda person: 2*initial(person)+person % 2
+        treated=lambda person: untreated(person)+1
+        states=ab_control_frames(population,treated,untreated,initial)
+        for state in states:
+            expected=ab_test(population,treated,untreated,initial,state['strength'],5)
+            values,probs=state['distributions'][0]
+            self.assertAlmostEqual(float(values @ probs),1)
+            self.assertAlmostEqual(state['mc_variance'],variance(expected))
+            va,vb,cross,total=state['terms']
+            self.assertAlmostEqual(va+vb-cross,total)
+            self.assertAlmostEqual(total/5,state['mc_variance'])
+        by_b={s['strength']:s for s in states}
+        self.assertAlmostEqual(by_b[1]['mc_variance'],.05625)
+        self.assertAlmostEqual(by_b[0]['mc_variance'],.025)
+        self.assertAlmostEqual(by_b[-2]['mc_variance'],0)
+
+    def test_decomposition_common_scale(self):
+        import plotly_viz as v
+        pair=shared(self.x).op(lambda x: 2*x, lambda x: x)
+        figures=[]
+        original=v._covariance_figure
+        def capture(*args, **kwargs):
+            result=original(*args, **kwargs)
+            figures.append(result[0])
+            return result
+        with patch.object(v, '_covariance_figure', side_effect=capture):
+            v.decomposition_widget(pair)
+        # Var(2X-X)=1: the result's square has half the side of Var(2X)=4.
+        first_width=np.ptp(figures[0].data[0].x)
+        result_width=np.ptp(figures[3].data[0].x)
+        self.assertAlmostEqual(result_width/first_width, .5)
+
     def test_polling(self):
         from checks import polling_response
         from intro_answers import monte_carlo, variance, control_variate, monte_carlo_with_control
@@ -662,48 +757,6 @@ class IntroTests(unittest.TestCase):
         self.assertDist(a.iid_statistic(Var([2,7],[0,1]),3,positive_only),[21],[1])
         with self.assertRaises(OverflowError):
             a.iid_statistic(Var([0,1],[.5,.5]),54,sum)
-
-    def test_post_stratification_held_out_fits(self):
-        from intro_answers import post_stratify
-        # With two draws, each fit sees exactly one other response.
-        # BB -> 0; RR -> .5; BR/RB -> (.5 + 2)/2 = 1.25.
-        draw=Var([0,1],[.75,.25])
-        with patch('numpy.random.default_rng',side_effect=AssertionError('No randomness')):
-            with patch('intro_answers.expect',side_effect=AssertionError('No population moments')):
-                result=post_stratify(draw,2,.25,lambda person: person,lambda person: 2*person)
-        self.assertDist(result,[0,.5,1.25],[.75**2,.25**2,2*.75*.25])
-        self.assertAlmostEqual(expect(result),.5)
-
-    def test_post_stratification_missing_groups(self):
-        from intro_answers import post_stratify
-        draw=Var([0,1,2,3],[.3,.4,.1,.2])
-        group=lambda person: person>=2
-        response=lambda person: [1,2,1,5][int(person)]
-        target=expect(draw.op(response))
-        for steps in (1,2,3,4):
-            for fallback in (0,3,-2):
-                with self.subTest(steps=steps,fallback=fallback):
-                    result=post_stratify(draw,steps,.3,group,response,fallback)
-                    self.assertAlmostEqual(sum(result.probs),1)
-                    self.assertAlmostEqual(expect(result),target)
-                    self.assertTrue(np.all(np.isfinite(result.values)))
-        # No training observations at all: the common fallback cancels.
-        self.assertDist(post_stratify(draw,1,.3,group,response),[1,2,5],[.4,.4,.2])
-
-    def test_post_stratification_polling(self):
-        from intro_answers import post_stratify, variance
-        from intro_answers import monte_carlo
-        from checks import polling_response
-        draw=uniform(0,30)
-        raw=monte_carlo(draw.op(polling_response),6)
-        with patch('checks.polling_response',side_effect=AssertionError('No population access')):
-            with patch('numpy.random.default_rng',side_effect=AssertionError('No randomness')):
-                result=post_stratify(draw,6,1/3,lambda person: person<10,polling_response)
-        self.assertIsInstance(result,Var)
-        self.assertAlmostEqual(sum(result.probs),1)
-        self.assertAlmostEqual(expect(result),2.9)
-        self.assertLess(variance(result),variance(raw))
-        self.assertAlmostEqual(variance(result),.525,places=3)
 
     def test_dense_plot_labels(self):
         from plotly_viz import _covariance_figure, _label_indices
@@ -798,8 +851,8 @@ class IntroTests(unittest.TestCase):
         self.assertDist(op(lambda a: 4., self.y), [4], [1])
         self.assertDist(add(shared(self.x)), [-2, 0, 2], [.5, 0, .5])
         self.assertDist(add(indep(self.x, self.x)), [-2, 0, 2], [.25, .5, .25])
-        self.assertDist(mul(shared(self.x)), [-1, 1], [0, 1])
-        self.assertDist(mul(indep(self.x, self.x)), [-1, 1], [.5, .5])
+        self.assertDist(shared(self.x).mul(), [-1, 1], [0, 1])
+        self.assertDist(indep(self.x, self.x).mul(), [-1, 1], [.5, .5])
         combined = binop(lambda a, b: a*a+2*b, shared(self.x))
         self.assertDist(combined, [-1, 3], [.5, .5])
         collapsed = binop(lambda a, b: 4., indep(self.x, self.y))
