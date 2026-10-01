@@ -97,13 +97,13 @@ def density_widget(rv, without=None, comparison_labels=None):
 
 def reinforce_baseline_slider(control, reward, score, steps=5):
     """Vary a constant reward baseline while keeping the sample count fixed."""
-    baselines = np.arange(-4., 4.25, .25)
+    baselines = np.arange(-4., 8.25, .25)
     estimates = [monte_carlo(control(reward, float(b), score), steps) for b in baselines]
     raw = estimates[16]  # b = 0
     masses = [_scalar_mass(rv) for rv in estimates]
     grid, bandwidth = _density_grid(masses)
     curves = [_weighted_density(v, p, grid, bandwidth) for v, p in masses]
-    active = len(baselines) - 1
+    active = int(np.flatnonzero(baselines == 4.0)[0])
     fig = go.Figure()
     for name, curve, color in (("Reinforce", curves[16], "#858b90"),
                                 ("Constant baseline", curves[active], "#4c8194")):
@@ -191,20 +191,8 @@ def monte_carlo_samples_slider(sample, max_samples=5, without=None, labels=None)
                 args=[[str(count)], dict(mode="immediate", frame=dict(duration=0, redraw=True),
                                           transition=dict(duration=0))])
                 for count in counts])])
-    reports = []
-    for i, count in enumerate(counts):
-        report = f"{count} sample{'s' if count != 1 else ''}: {estimate_label} mean = {expect(estimates[i]):.4f}; variance = {variance(estimates[i]):.4f}"
-        if comparisons:
-            report += f"\n{other_label} mean = {expect(comparisons[i]):.4f}; variance = {variance(comparisons[i]):.4f}"
-        reports.append(report)
-    ident = "mc-samples-" + uuid.uuid4().hex
-    script = f"""const report=document.getElementById('{ident}');
-const reports={json.dumps(reports)};
-plot.on('plotly_sliderchange', e => {{
- report.textContent=reports[Number(e.step.args[0][0])-1];
-}});"""
-    return HTML(f'<pre id="{ident}">{reports[0]}</pre>' + fig.to_html(
-        full_html=False, include_plotlyjs=EMBED_PLOTLY_JS, post_script=script,
+    return HTML(fig.to_html(
+        full_html=False, include_plotlyjs=EMBED_PLOTLY_JS,
         config=dict(displayModeBar=False, scrollZoom=False, responsive=True)))
 
 
@@ -497,8 +485,8 @@ plot.addEventListener('mouseleave', () => highlight(null));"""
     return script + WHEEL_SCRIPT
 
 
-def covariance_widget(pair, variance=False, boxes=True):
-    fig,box_ids,mapping=_covariance_figure(pair,variance,boxes=boxes)
+def covariance_widget(pair, variance=False, boxes=True, max_labels=None):
+    fig,box_ids,mapping=_covariance_figure(pair,variance,boxes=boxes,max_labels=max_labels)
     return HTML(fig.to_html(full_html=False,include_plotlyjs=EMBED_PLOTLY_JS,post_script=_hover_script(box_ids,mapping),
         config=dict(displayModeBar=False,scrollZoom=False,responsive=True)))
 

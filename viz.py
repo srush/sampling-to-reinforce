@@ -178,7 +178,7 @@ def covariance_3d(pair, variance=False, show=True, probability_limit=None,
         from plotly_viz import covariance_widget
         if isinstance(pair,Var):
             raise TypeError("Covariance needs a Joint")
-        widget=covariance_widget(pair,variance=variance,boxes=boxes)
+        widget=covariance_widget(pair,variance=variance,boxes=boxes,max_labels=max_post_labels)
         display(widget)
         return widget
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection

@@ -35,6 +35,7 @@
 # elementary variance reduction techniques. The blog assumes no knowledge of RL or 
 # math. The text and comments are written by a person; the code is written by AI. 
 
+# - srush
 # %% tags=["hide"]
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -597,7 +598,7 @@ def kl_k3(p: Var, q: Var, b: float = -1) -> Joint:
         lambda a: q.prob(a) / p.prob(a), known_mean=1, b=b)
 
 pair: Joint = kl_k3(p, q, b=1)
-covariance_3d(pair)
+covariance_3d(pair, max_post_labels=0)
 
 # %% [markdown]
 # Again, we see that the term has negative covariance. This seems bad at first, but 
