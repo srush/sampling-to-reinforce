@@ -802,6 +802,9 @@ display(reinforce_baseline_slider(reinforce_control, r, score_joint, steps=2))
 # $$
 # (r(A_i)-\bar r_{-i})s_T(A_i).
 # $$
+# 
+# This is called leave-one-out (LOO) but is more commonly known as [GRPO](https://arxiv.org/abs/2402.03300) in modern
+# models. 
 
 
 # %%
