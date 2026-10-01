@@ -272,6 +272,9 @@ class IntroTests(unittest.TestCase):
             self.assertAlmostEqual(expect(a.topk(x, f, k)), target)
         self.assertAlmostEqual(a.variance(a.topk(x, f, 3)), 0)
         self.assertDist(a.topk(x, f, 0), x.op(f).values, x.probs)
+        self.assertDist(a.topk(x, f, 1), [23.5, 62.], [.4, .6])
+        # A zero-mass remainder is deterministic even if its support is nonempty.
+        self.assertDist(a.topk(Var([2, 7], [1., 0.]), f, 1), [1.], [1.])
 
     def test_topk_kl(self):
         import intro_answers as a
@@ -295,7 +298,7 @@ class IntroTests(unittest.TestCase):
         q = Var([2, 7], [.6, .4])
         result = a.kl_topk(p, q, 1)
         exact = .7*np.log(.7/.4)
-        self.assertDist(result, [exact+np.log(.3/.6), exact], [.3, .7])
+        self.assertDist(result, [exact+.3*np.log(.3/.6)], [1.0])
 
     def test_topk_kl_selects_by_p_probability(self):
         import intro_answers as a
@@ -305,8 +308,8 @@ class IntroTests(unittest.TestCase):
         terms = p.probs * np.log(p.probs / q.probs)
         self.assertEqual(int(np.argmax(terms)), 1)
         exact = terms[0]
-        expected = p.op(lambda x: exact + (0 if x == 0 else
-                                           p.log_prob(x) - q.log_prob(x)))
+        expected = Var([exact + .4*np.log(.3/.1), exact + .4*np.log(.1/.01)],
+                       [.75, .25])
         actual = a.kl_topk(p, q, 1)
         self.assertDist(actual, expected.values, expected.probs)
         self.assertAlmostEqual(expect(actual), a.kl(p, q))

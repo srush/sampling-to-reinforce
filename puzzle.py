@@ -22,19 +22,18 @@
 # 
 # 
 # Despite being mathematically concise, 
-# reinforce is tricky to master. It is not uncommon 
+# Reinforce is tricky to master. It is not uncommon 
 # to read papers in the area that are confused or buggy. 
 # My personal theory for this is that 
 # random sampling can actually hide a bunch of issues.
 # It makes it hard to just "code your way" through problems.
 #  
-# The goal of this blog is to build up to reinforce 
+# The goal of this blog is to build up to Reinforce 
 # from scratch. It takes the non-standard approach
-# of doing it without any random numbers.  
-# Obviously, this cannot scale, but it will let use build 
+# of doing it without any random numbers.  Obviously, this cannot scale, but it will let us build 
 # intuition for boring things like
 # elementary variance reduction techniques. The blog assumes no knowledge of RL or 
-# math. The text and comments are written by a person, the code is written by AI. 
+# math. The text and comments are written by a person; the code is written by AI. 
 
 # %% tags=["hide"]
 import jax
@@ -69,10 +68,10 @@ from plotly_viz import (
 
 
 # We are going to start from scratch by implementing a mini-language for 
-# working with random variables. Our language will allow use to apply 
+# working with random variables. Our language will allow us to apply 
 # some basic operations on these variables and propagate key properties. 
-# These are random  in the statistical sense, but will not require drawing pseudorandom values in 
-# the CS sense, but instead keeping around all possible values and their probabilities.
+# These are random in the statistical sense, but will not require drawing pseudorandom values in
+# the CS sense. Instead, we keep all possible values and their probabilities.
 
 #
 # The main object in the language is a finite-sized, discrete random variable. 
@@ -88,13 +87,13 @@ histogram(eight)
 # %% [markdown]
 
 # We can transform random variables to create new ones. 
-# Mathematically, this is written, 
+# Mathematically, this is written as 
 # $$ 
 # Y=2X.
 # $$
-# However, to make it more clear what is going on we write it 
-# as an explicit map over values. Similarly  we also define a filter 
-# over values that renomalizes the distribution. 
+# However, to make it clearer what is going on, we write it
+# as an explicit map over values. Similarly, we define a filter
+# over values that renormalizes the distribution. 
 
 # %%
 
@@ -104,9 +103,9 @@ histogram_row(eight.op(lambda a: a * 2), eight.cond(lambda a: a < 6),
 
 # %% [markdown]
 # 
-# We will be interested in estimating expectations of random variables. 
-# This is represented as the red line in the histogram
-# and computed as, 
+# We will be interested in estimating expectations of random variables.
+# The expectation is represented by the red line in the histogram
+# and computed as 
 #
 # $$
 # \mathbb E[X]=\sum_i p_i x_i
@@ -121,7 +120,7 @@ print(f"E[X] = {expect(eight):.2f}")
 # %% [markdown]
 # 
 # As we build our way to Reinforce, our primary goal will be to 
-# build low-variance, unbiased estimators. Unbiased means the 
+# build low-variance, unbiased estimators. Unbiased means that 
 # they have the same expectation as a target quantity. 
 # Variance measures the spread of a random variable around its mean.
 # It's the quantity we aim to minimize. 
@@ -131,9 +130,9 @@ print(f"E[X] = {expect(eight):.2f}")
 # $$
 #
 
-# The visualization for variance will be a weigted sum of squares. 
-# The base of each box with side length distance from the mean. The height 
-# is the same height as the histogram.
+# The visualization for variance will be a weighted sum of squares.
+# The base of each box is a square whose side length is the distance from the mean.
+# Its height is the same as in the histogram.
 #
 # $$
 # \operatorname{Var}(bX)=b^2\operatorname{Var}(X)
@@ -151,9 +150,9 @@ print(f"Var(X) = {variance(eight):.4f}")
 display(scaled_variance_slider(eight))
 
 # %% [markdown]
-# ## Joint random variables
+# ## Joint Random Variables
 #
-# Next we will consider the relationship between random variables. 
+# Next, we will consider the relationship between random variables. 
 # We'll be overly pedantic here to show how it works. 
 # Our object here will keep track of the probability of 
 # every shared state in a table. 
@@ -166,7 +165,7 @@ joint_example = Joint([0, 2, 5], [0, 1],
 histogram(joint_example)
 
 # %% [markdown]
-# Just as with random variables we can map over the values. 
+# Just as with random variables, we can map over the values. 
 
 # %%
 transformed = joint_example.op(lambda a: 2 * a, lambda b: -1 * b + 3)
@@ -198,7 +197,7 @@ histogram(two_dice_shared)
 
 # %% [markdown]
 # 
-# Notably these joints have different sums.
+# Notably, these joints have different sums.
 
 # %%
 histogram_row(two_dice.add(), two_dice_shared.add(),
@@ -215,20 +214,20 @@ histogram_row(two_dice.add(), two_dice_shared.add(),
 # $$
 # 
 # Covariance measures how each paired outcome in our joint distribution
-# relates to the two means. Unlike variance, contributions can have a
-# positive or negative contribution to the covariance, depending on which side 
-# of the mean they are. 
+# relates to the two means. Unlike variance contributions, covariance contributions
+# can be positive or negative, depending on which side of their respective
+# means the paired values lie. 
 # 
-# In the sense that variance represents the norm of noise, covariance is the dot product. 
+# In the sense that variance represents the squared norm of noise, covariance is the dot product.
 # For the dice above, the two ways of drawing give these rules:
 #
 # $$
 # \begin{aligned}
-# X,Y\text{ independent}: && \operatorname{Cov}(X,Y)&=0,\\
-# Y,X\text{ shared }: && \operatorname{Cov}(X,Y)&=\operatorname{Var}(X).
+# \operatorname{Cov}(X,Y)&=0 &&\text{if }X,Y\text{ are independent},\\
+# \operatorname{Cov}(X,X)&=\operatorname{Var}(X) &&\text{for the same shared draw}.
 # \end{aligned}
 # $$
-# In this example we extrapolate between shared and independent dice and show the covariance. 
+# In this example we interpolate between shared and independent dice and show the covariance. 
 # Magenta indicates a negative contribution. 
 
 # %%
@@ -246,9 +245,9 @@ display(covariance_interpolation_slider(die))
 # \operatorname{Var}(X-Y)&=\operatorname{Var}(X)+\operatorname{Var}(Y)-2\operatorname{Cov}(X,Y).
 # \end{aligned}
 # $$
-# For the two dice, the slider between independent and shared has the same variance 
-# but increasing covariance. You can see this intuitively in the histogram the independent 
-# sum spreads out less than the shared one. 
+# As the slider moves from independent to shared, each die has the same variance
+# but their covariance increases. You can see this intuitively in the histogram:
+# the independent sum spreads out less than the shared one. 
 
 # %%
 display(sum_variance_slider(die))
@@ -273,7 +272,7 @@ def monte_carlo_with_randomness(f, T):
 
 # %% [markdown]
 # Our version will use joint distribution primitives 
-# to explicitly track independent draws. The result is a random variable itself called the estimator.
+# to explicitly track independent draws. The result is a random variable itself, called the estimator.
 
 # %%
 def monte_carlo(f_x: Var, steps: int) -> Var:
@@ -285,7 +284,7 @@ def monte_carlo(f_x: Var, steps: int) -> Var:
 # %% [markdown]
 # 
 # The Monte Carlo estimator will have the same expectation as the true random variable. 
-# The interesting question though is how it can deviate from this value. This is captured 
+# The interesting question, though, is how it can deviate from this value. This is captured 
 # by the variance of the estimator.
 
 
@@ -315,7 +314,7 @@ display(coin_variance_slider(20))
 
 
 # %% [markdown]
-# ## Example - Polling
+# ## Example: Polling
 
 # %% tags=["hide"]
 from checks import polling_response as response
@@ -323,10 +322,10 @@ from plotly_viz import polling_sketch
 display(polling_sketch())
 
 # %% [markdown]
-# Sampling makes more sense if the function f is a completely unknown. 
-# We can consider the example of estimating an population level value by polling 
-# a subset of people. Here imaging two counties, one that leans red (6) and one that leans blue (1).
-# Each individual values is unknown.
+# Sampling makes more sense if the function `f` is completely unknown. 
+# We can consider the example of estimating a population-level value by polling 
+# a subset of people. Here, imagine two counties, one that leans red (6) and one that leans blue (1).
+# Each individual's value is unknown.
 
 # %%
 population = uniform(0, 30)
@@ -337,14 +336,14 @@ histogram(ordinary_poll)
 
 # %% [markdown]
 # One intuitive way to think about variance here 
-# is to consider what is happening in the worst case scenario where 
+# is to consider what is happening in the worst-case scenario where 
 # the estimator yields 1. That can only really occur if all the samples
 # landed on the blue side of the population. 
 #
 # In this case we can actually reduce variance without requiring more samples through 
 # stratified sampling. 
 # We do this by exploiting the known structure of the population, i.e. the individual groups 
-# may have lower internal variance. Note important this doesn't use the direction of the group.
+# may have lower internal variance. Note that this does not use the direction of each group's lean.
 #
 # We see that this yields an unbiased estimator that doesn't sample the outliers at all.
 
@@ -369,15 +368,15 @@ assert variance(stratified_poll) < variance(ordinary_poll)
 # samples are expensive, and the variance decreases slowly with more samples. 
 # We saw that stratified sampling helped, but required specific knowledge of the function.
 
-# Control variates are a flexible techniques for variance reduction. They work by 
-# adding in a term to the random variable the preserves expectations while reducing variance. 
+# Control variates are flexible techniques for variance reduction. They work by 
+# adding in a term to the random variable that preserves expectations while reducing variance. 
 #
 
 # Consider subtracting a zero-mean variable using the same draw.
 # The expectation stays fixed; positive covariance can reduce the variance.
 
 # $$
-# E[X-B]=E[X]-E[B]=E[X]
+# \mathbb E[X-B]=\mathbb E[X]-\mathbb E[B]=\mathbb E[X]
 # $$
 
 
@@ -391,13 +390,13 @@ def monte_carlo_with_control(pair: Joint, steps: int) -> Var:
 
 # %% [markdown]
 # 
-# Recall our variance decomposition. For a control variate to be helpful 
-# it has to have more covariance with the target than variance.
+# Recall our variance decomposition. For a control variate to reduce variance,
+# twice its covariance with the target must exceed its own variance.
 
 #
 # $$
 # \begin{aligned}
-# \operatorname{Var}(A-B)&=\operatorname{Var}(A)+\operatorname{Var}(B)-2\operatorname{Cov}(A,B),\\
+# \operatorname{Var}(A-B)&=\operatorname{Var}(A)+\operatorname{Var}(B)-2\operatorname{Cov}(A,B).
 # \end{aligned}
 # $$
 
@@ -410,16 +409,16 @@ variance_reduction_3d(decomposition)
 
 
 # %% [markdown]
-# Generally we would like to pick a control variate that is 
+# Generally, we would like to pick a control variate that is 
 # close to the target random variable. There is some art to 
 # this, and it can also be learned from data. 
 #
-# Let's consider a simple example where we have function that we know 
+# Let's consider a simple example where we have a function that we know 
 # is roughly linear with slope 3. We use a linear function with shared randomness 
 # as a control variate. 
 # 
 # In the best case, we get it exactly right and the estimator variance goes to zero.
-# Worst case, we get it wrong and add variance. In any case the expectation is preserved.
+# Worst case, we get it wrong and add variance. In any case, the expectation is preserved.
 
 
 
@@ -445,8 +444,8 @@ check("quadratic", monte_carlo(sub(pair), 5), plot=False)
 # ## Example: A/B Tests
 #
 # Now let's consider an example of an A/B test. 
-# We independently sample U and V from the population and compare 
-# their response to a treatment. Notably we do this when we are 
+# We independently sample `U` and `V` from the population and compare 
+# their responses to a treatment. Notably, we do this when we are 
 # unable to get the value for the same person both treated and untreated.
 
 # $$
@@ -477,7 +476,7 @@ density(raw_difference)
 #
 # To try to reduce the variance of this estimator, we can use information 
 # that we know about the population before the test. Here we will use the 
-# initial preference as a control variate assuming we know the mean. 
+# initial preference as a control variate, assuming we know the mean. 
 # 
 # $$
 # \text{Control: }B=\bigl(\mathrm{initial}(U)-\mathrm{initial}(V)\bigr).
@@ -490,16 +489,16 @@ density(adjusted_difference, without=raw_difference)
 
 # %% [markdown]
 # Hmm, this felt like a really good idea, but it actually increased the variance!
-# The problem is the correlation was the wrong direction. 
+# The problem is the correlation had the wrong sign. 
 
-# We're on the right track though. Instead of just using the initial preference 
+# We're on the right track, though. Instead of just using the initial preference 
 # we can instead scale it without changing the expectation. 
 #
 # $$
 # \text{Control: }B=b\bigl(\mathrm{initial}(U)-\mathrm{initial}(V)\bigr).
 # $$
 #
-# In practice this scaling factor could be learned or estimated from the sampled group (if 
+# In practice, this scaling factor could be learned or estimated from the sampled group (if 
 # you are careful). 
 
 # %%
@@ -510,18 +509,18 @@ display(ab_control_widget(population, treated, untreated, initial, steps=5))
 # ## Example: KL Divergence
 #
 # We now turn to some applications of control variates in 
-# machine learning. One case they often come up in is estimating
+# machine learning. They often come up when estimating
 # entropy and divergences. This is particularly important in 
 # applications like language modeling where the size of the token 
 # set makes exact computation expensive. 
 
 # $$
-# \mathrm{KL}(p\Vert q)=E_{x} \log\frac{p(x)}{q(x)}.
+# \mathrm{KL}(p\Vert q)=\mathbb E_{X\sim p}\left[\log\frac{p(X)}{q(X)}\right].
 # $$
 #
 # Here the random variable that we are estimating is the log ratio itself. 
-# We can treat p and q as determistic mappings over a shared x.  
-# Otherwise we handle it like we have in the past. 
+# We can treat `p` and `q` as deterministic mappings over a shared `x`.  
+# Otherwise, we handle it like we have in the past. 
 
 # %%
 p = weighted_die([1, 2, 3, 4, 5, 6])
@@ -540,7 +539,7 @@ print(f"Exact KL(p || q) = {exact_kl:.6f}")
 
 # $$
 # X_i\overset{\mathrm{iid}}{\sim}p,\quad
-# k_1(r)=-\log r,\quad r(x)=q(x)/p(x),\quad
+# k_1(r)=-\log r,\quad r(x)=q(x)/p(x).
 # $$
 
 # %%
@@ -578,11 +577,11 @@ display(monte_carlo_samples_slider(k2_draw, without=k1_draw,
                                    labels=("k1", "k2")))
 
 # %% [markdown]
-# Unfortunately, the k2 estimator has the issue that changes the expectation, yielding
+# Unfortunately, the k2 estimator changes the expectation, yielding
 # a biased estimator. We really want to maintain the expectation. 
 #
-# The approach is k3 is to use the ratio of the two distributions as a control variate.
-# The benefit of this is that we can easily show the expectation is 1. 
+# The approach in k3 is to use the ratio of the two distributions as a control variate.
+# The benefit of this is that we can easily show that its expectation is 1. 
 # 
 # $$
 # \text{Control: }B=\frac{q(X)}{p(X)}.
@@ -601,15 +600,15 @@ pair: Joint = kl_k3(p, q, b=1)
 covariance_3d(pair)
 
 # %% [markdown]
-# Again we see that the term has negative covariance. This seems bad at first, but 
-# we can fix it by setting the coefficient to a negative value.  Specifically setting 
+# Again, we see that the term has negative covariance. This seems bad at first, but 
+# we can fix it by setting the coefficient to a negative value.  Specifically, setting 
 # it to -1 gives
 # 
 # $$
 # k_3(r)=-\log r+r-1.
 # $$
 # 
-# Which yields an better unbiased estimator for our example. 
+# This yields a better unbiased estimator for our example. 
 
 # %%
 pair = kl_k3(p, q, b=-1)
@@ -625,19 +624,19 @@ assert np.isclose(expect(k3_samples), exact_kl)
 
 # %% [markdown]
 # There are other estimators of KL that extend these ideas further.
-# The [Top-K KL Estimator](https://arxiv.org/abs/2602.04417) uses 
-# the sum of the top-k highest prob sample along with one random sample
-# outside this group. 
+# Inspired by the [Top-K KL Estimator](https://arxiv.org/abs/2602.04417), we sum
+# the top-k highest-probability outcomes exactly. Here we sample only from the
+# remaining outcomes and multiply the log ratio by their total probability mass.
 #
 # $$
-# \begin{aligned}
-# \hat D_k&=\sum_{a\in T_k}p(a)\log\frac{p(a)}{q(a)}
-# +E_{X\notin T_k}\log\frac{p(X)}{q(X)},\\
-# \end{aligned}
+# \hat D_k=\sum_{a\in T_k}p(a)\log\frac{p(a)}{q(a)}
+# +m\log\frac{p(X)}{q(X)},\qquad
+# X\sim p(\cdot\mid X\notin T_k),\quad m=\sum_{a\notin T_k}p(a).
 # $$
+# If the remaining mass is zero, the exact sum is the whole answer.
 # 
 # We can see this approach as a variant of stratified sampling (as in polling) where we combine
-# random sampling with a deterministic enumeration. 
+# random sampling with deterministic enumeration. 
 
 # %%
 def kl_topk(p: Var, q: Var, k: int) -> Var:
@@ -657,7 +656,8 @@ display(monte_carlo_samples_slider(topk_draw, without=k1_draw,
 #
 # The conclusion of this exercise is to apply what we have learned to 
 # Reinforce. Reinforce gives us a general form for computing the derivative of 
-# the expected reward. The second step uses identity of the derivative of the log. 
+# the expected reward. The reward is fixed with respect to the parameters.
+# The second step uses the log-derivative identity.
 
 # $$
 # \begin{aligned}
@@ -665,7 +665,7 @@ display(monte_carlo_samples_slider(topk_draw, without=k1_draw,
 # &=\sum_a r(a)\nabla_\theta p_\theta(a)\\
 # &=\sum_a p_\theta(a)r(a)\nabla_\theta\log p_\theta(a)\\
 # &=\mathbb E_{A\sim p_\theta}
-#   [r(A)\nabla_\theta\log p_\theta(A)]\\
+#   [r(A)\nabla_\theta\log p_\theta(A)].
 # \end{aligned}
 # $$
 
@@ -692,8 +692,8 @@ display(monte_carlo_samples_slider(topk_draw, without=k1_draw,
 # \end{aligned}
 # $$
 
-# This allows us to design control variates that do not require a known mean 
-# as long as they are independent of A. 
+# This allows us to use baselines whose means need not be known,
+# as long as the baselines are independent of the sampled action A. 
 
 
 # %% [markdown]
@@ -701,10 +701,10 @@ display(monte_carlo_samples_slider(topk_draw, without=k1_draw,
 #  
 # Now let's consider training the simplest model possible.
 # The model has one parameter, temperature, and uses that parameter 
-# to control a discrete policy with 8 possible outcomes. 
+# to control a discrete policy with eight possible outcomes. 
 #
 # $$
-# p_T(a)=\frac{\exp(a/T)}{\sum_{j}\exp(j/T)}
+# p_T(a)=\frac{\exp(a/T)}{\sum_{j}\exp(j/T)}\quad T>0.
 # $$
 
 # %%
@@ -722,8 +722,7 @@ display(temperature_policy_slider(policy, temperature))
 # respect to temperature. It has expectation zero.
 #
 # $$
-# \frac{\partial}{\partial T}\log p_T(a)
-#       
+# s_T(a)=\frac{\partial}{\partial T}\log p_T(a).
 # $$
 
 # %%
@@ -740,8 +739,8 @@ assert np.isclose(expect(score), 0)
 #
 # We now put this together to form
 #
-# $$ mathbb E_{A\sim p_\theta}
-#   [r(A)\nabla_\theta\log p_\theta(A)]$$
+# $$
+# \mathbb E_{A\sim p_\theta}[r(A)\nabla_\theta\log p_\theta(A)].
 # $$
 
 # %%
@@ -758,11 +757,11 @@ gradient_samples = monte_carlo(gradient_draw, 5)
 
 exact_gradient = -variance(action) / temperature**2
 histogram(gradient_samples)
-display(monte_carlo_samples_slider(gradient_draw, labels=("REINFORCE",)))
+display(monte_carlo_samples_slider(gradient_draw, labels=("Reinforce",)))
 
 # %% [markdown]
 #
-# Now that we have the full formula we can consider methods for variance reduction. 
+# Now that we have the full formula, we can consider methods for variance reduction. 
 # We start by playing with some possible constants to modify our formula with. 
 #
 # $$
@@ -783,20 +782,20 @@ display(reinforce_baseline_slider(reinforce_control, r, score_joint, steps=2))
 
 # Playing around with the above example, you get a sense that putting the constant value 
 # around the mean of the original distribution reduces the variance of our estimator. 
-# The math here is beyond the blog, but in generally, roughly picking the expected reward is good way 
+# The math here is beyond the blog, but in general, approximating the expected reward is a useful way 
 # to set this value. 
 #
-# Of course if we are in the process of learning our model, it is hard to know what the 
-# expected reward is, since we cannot enumerate our policy. Luckily this too can be done 
-# with Monte Carlo sampling. We simple take N independent samples and use them to estimator of the 
-# reward. 
+# Of course, if we are in the process of learning our model, it is hard to know what the 
+# expected reward is, since we cannot enumerate our policy. Luckily, this too can be done 
+# with Monte Carlo sampling. We simply take independent samples and use their mean
+# to estimate the expected reward. 
 
-# In fact we can reuse the sample that we are already using for reinforce to compute this 
-# value. The only trick is that we need to not use our own sample, since the term b needs to be a 
-# constant for the trick to work. 
+# In fact, we can reuse the samples that we are already using for Reinforce to compute this
+# value. The trick is to exclude the current sample: the baseline b must be independent
+# of that sample for the identity to hold. 
 
 # $$
-# (r(A_i)-\bar r_{-i})s_T(A_i),\qquad
+# (r(A_i)-\bar r_{-i})s_T(A_i).
 # $$
 
 
@@ -805,12 +804,11 @@ baseline = leave_one_out(temperature, n=3)
 gradient = reinforce_control(r, baseline, score_joint)
 
 display(monte_carlo_samples_slider(gradient, without=gradient_draw,
-                                   labels=("REINFORCE", "Leave-one-out")))
+                                   labels=("Reinforce", "Leave-one-out")))
 assert np.isclose(expect(gradient), exact_gradient)
 
 # %% [markdown]
-# There are of course several more things you need to extend this approach to full on LLMs. 
-# We need to extend to multiple parameters as well as sequences of random variables. 
-# There is also lots of interesting detail in the choice and intersection of rewards. 
-# That being said this is roughly the main math underlying much of what we now call post-training. 
-
+# There are, of course, several more things you need to extend this approach to full-scale LLMs. 
+# We need to extend it to multiple parameters as well as sequences of random variables. 
+# There are also many interesting details in the choice and interaction of rewards.
+# That being said, this is roughly the main math underlying much of what we now call post-training. 

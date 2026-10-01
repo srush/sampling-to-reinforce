@@ -347,32 +347,28 @@ def k3(p: Var, q: Var) -> Var:
 
 
 def topk(x: Var, f: Fn, k: int) -> Var:
+    """Sum the top-k contribution exactly and sample the conditional remainder."""
     x = x.op(lambda a: a)
     if not 0 <= k <= len(x.values):
         raise ValueError("k must be between zero and the support size")
     indices = np.argsort(-x.probs, kind="stable")[:k]
     top = x.values[indices]
     exact = sum(x.probs[i]*f(x.values[i]) for i in indices)
-    return x.op(lambda a: exact + (0 if a in top else f(a)))
+    remaining = ~np.isin(x.values, top)
+    mass = float(x.probs[remaining].sum())
+    if mass == 0:
+        return Var([exact], [1.0])
+    tail = Var(x.values[remaining], x.probs[remaining] / mass)
+    return tail.op(lambda a: exact + mass*f(a))
 
 
 def kl_topk(p: Var, q: Var, k: int) -> Var:
-    """On-policy value estimator from Algorithm 1 of arXiv:2602.04417."""
+    """Exact top-k KL contribution plus a weighted conditional-tail sample."""
     if not np.isfinite(kl(p, q)):
         raise ValueError("q must assign positive probability wherever p does")
-    p = p.op(lambda a: a)  # Combine repeated outcomes before ranking.
-    if not 0 <= k <= len(p.values):
-        raise ValueError("k must be between zero and the support size")
-    indices = np.argsort(-p.probs, kind="stable")[:k]
-    top = p.values[indices]  # Select by p(a), before computing any KL terms.
-
     def log_ratio(a):
         return p.log_prob(a) - q.log_prob(a) if p.prob(a) else 0.0
-
-    exact = sum(p.prob(a)*log_ratio(a) for a in top)
-    # X ~ p over the full support; mask the sampled term when X is in top.
-    sampled = p.op(lambda a: 0.0 if a in top else log_ratio(a))
-    return sampled.op(lambda tail: exact + tail)
+    return topk(p, log_ratio, k)
 
 
 def group_rewards(model: Var, reward_a: Fn, reward_b: Fn) -> Joint:

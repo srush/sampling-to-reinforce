@@ -111,7 +111,9 @@ def _reference(name):
             values = values + q/p - 1
         if name == "topk":
             exact = p[3:] @ values[3:]
-            values = exact + np.where(die <= 3, values, 0)
+            tail_mass = p[:3].sum()
+            values = exact + tail_mass * values[:3]
+            p = p[:3] / tail_mass
         v, mass = _mean_distribution(values, 5, probabilities=p)
         return v, mass, target
     if name in {"markov", "unigram"}:
@@ -181,7 +183,7 @@ TITLES = {
     "k3": "12 · k3 KL control variate",
     "topk": "15 · Unbiased top-k KL",
     "markov": "13 · Two-state Markov chain", "unigram": "14 · Unigram control variate",
-    "reinforce": "15 · Two-dimensional REINFORCE", "loo": "16 · Leave-one-out REINFORCE",
+    "reinforce": "15 · Two-dimensional Reinforce", "loo": "16 · Leave-one-out Reinforce",
 }
 
 

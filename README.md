@@ -1,4 +1,6 @@
-# RL Puzzles
+# From Sampling to Reinforce
+
+[Read the blog](https://srush.github.io/sampling-to-reinforce/).
 
 All notebook exercises use two simple NumPy containers: `Var` holds
 equal-length values/probability arrays; `Joint` holds two 1D supports and a 2D

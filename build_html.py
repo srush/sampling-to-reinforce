@@ -42,13 +42,13 @@ def build(profile=False):
                          "monte_carlo", "independent_two_variables", "linear_control", "quadratic_control",
                          "two_variables", "additive", "k1", "kl_k3", "kl_topk",
                          "markov_chain", "markov_unigram", "group_rewards", "reinforce", "reinforce_loo")
-    titles = ["Four sides","Six sides","Triangular distribution","Weighted dice from fair coins","Two dice","One sample","Monte Carlo · ten samples","Independent two-variable Monte Carlo","A roughly linear control variate","Five samples, a roughly parabolic function","Five samples, two variables","Five samples, an additive function","k1 KL estimate","k3 KL control variate","Unbiased top-k KL","A two-state Markov chain","A unigram control variate","Additive rewards from one model draw","REINFORCE with a two-dimensional gradient","REINFORCE with leave-one-out"]
+    titles = ["Four sides","Six sides","Triangular distribution","Weighted dice from fair coins","Two dice","One sample","Monte Carlo · ten samples","Independent two-variable Monte Carlo","A roughly linear control variate","Five samples, a roughly parabolic function","Five samples, two variables","Five samples, an additive function","k1 KL estimate","k3 KL control variate","Unbiased top-k KL","A two-state Markov chain","A unigram control variate","Additive rewards from one model draw","Reinforce with a two-dimensional gradient","Reinforce with leave-one-out"]
     titles[4] = "Two triangles"
     answers = dict(zip(titles, names))
     # These estimators are defined in the visible notebook cells.
     answers.pop("k1 KL estimate")
     answers.pop("k3 KL control variate")
-    answers.pop("REINFORCE with leave-one-out")
+    answers.pop("Reinforce with leave-one-out")
     question_ids = {title: f"puzzle-{i}" for i, title in enumerate(titles, 1)}
     # Keep later puzzle IDs stable while removing this example from the page.
     answers.pop("Five samples, an additive function")
@@ -155,7 +155,7 @@ def build(profile=False):
                          for anchor, label in section_nav)
     html = ('<!doctype html><html lang="en"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>RL Puzzles</title><style>' + css + formatter.get_style_defs('.highlight') +
+            '<title>From Sampling to Reinforce</title><style>' + css + formatter.get_style_defs('.highlight') +
             '</style><script>' + plotly_bundle + '</script>'
             '<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>'
             '<body><header><div><strong>RL Puzzles</strong></div><nav>' + navigation +
