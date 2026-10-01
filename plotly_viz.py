@@ -692,22 +692,6 @@ def decomposition_widget(pair, sign=-1, parts_only=False):
     return HTML('<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr))">'+''.join(html)+'</div>')
 
 
-def square_slider(x):
-    from intro_answers import square
-    strengths=np.linspace(0,2,21)
-    figs=[_histogram_figure(square(x,float(b))) for b in strengths]
-    fig=figs[10]
-    fig.frames=[go.Frame(name=str(i),data=f.data,layout=dict(xaxis=dict(
-        tickmode="array",tickvals=f.layout.xaxis.tickvals,ticktext=f.layout.xaxis.ticktext))) for i,f in enumerate(figs)]
-    fig.update_xaxes(range=[-1,max(1,max(x.values**2))+1])
-    fig.update_yaxes(range=[0,1.1])
-    fig.update_layout(height=350,margin=dict(l=20,r=20,t=15,b=80),
-        sliders=[dict(active=10,x=.08,len=.84,y=-.15,currentvalue=dict(prefix="b = "),
-            steps=[dict(label=f"{b:.1f}",method="animate",args=[[str(i)],dict(mode="immediate",
-                frame=dict(duration=0,redraw=True),transition=dict(duration=0))]) for i,b in enumerate(strengths)])])
-    return HTML(fig.to_html(full_html=False,include_plotlyjs=EMBED_PLOTLY_JS,
-        post_script="const plot=document.getElementById('{plot_id}');"+WHEEL_SCRIPT,
-        config=dict(displayModeBar=False,scrollZoom=False,responsive=True)))
 
 
 def scaled_variance_slider(x):

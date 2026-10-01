@@ -4,46 +4,58 @@ import numpy as np
 from dist_types import Var, Joint
 from intro_answers import expect, uniform, shared, indep, op, binop, op_joint, add, marginal, transpose, covar
 
+import ast
+from pathlib import Path
+from types import SimpleNamespace
+import intro_answers
+
+def blog_functions():
+    """Load the article's actual function definitions without running its demos."""
+    source = Path(__file__).with_name("puzzle.py").read_text()
+    tree = ast.parse(source)
+    definitions = ast.Module(
+        body=[node for node in tree.body if isinstance(node, ast.FunctionDef)],
+        type_ignores=[])
+    namespace = dict(vars(intro_answers))
+    exec(compile(definitions, "puzzle.py", "exec"), namespace)
+    return SimpleNamespace(**namespace)
+
+blog = blog_functions()
 
 class IntroTests(unittest.TestCase):
     def test_temperature_gradients(self):
-        from itertools import product
-        import intro_answers as a
-        from checks import assert_distribution
         for temperature in (0.7, 3.0, 8.0):
-            action = a.temperature_policy(temperature)
+            action = blog.policy(temperature)
+            np.testing.assert_allclose(
+                action.probs, intro_answers.temperature_policy(temperature).probs)
             self.assertEqual(len(action.values), 8)
             delta = 1e-5
-            derivative = (expect(a.temperature_policy(temperature + delta))
-                          - expect(a.temperature_policy(temperature - delta))) / (2 * delta)
-            scores = np.array([a.temperature_score(x, expect(action), temperature)
+            derivative = (expect(blog.policy(temperature + delta))
+                          - expect(blog.policy(temperature - delta))) / (2 * delta)
+            scores = np.array([blog.temperature_score(x, expect(action), temperature)
                                for x in action.values])
-            numerical_scores = (np.log(a.temperature_policy(temperature + delta).probs)
-                                - np.log(a.temperature_policy(temperature - delta).probs)) / (2 * delta)
+            numerical_scores = (np.log(blog.policy(temperature + delta).probs)
+                                - np.log(blog.policy(temperature - delta).probs)) / (2 * delta)
             np.testing.assert_allclose(scores, numerical_scores, atol=1e-8)
             self.assertAlmostEqual(float(action.probs @ scores), 0)
-            self.assertAlmostEqual(expect(a.temperature_reinforce(temperature, 3)), derivative)
-            for n in (2, 3):
-                values, masses = [], []
-                for outcomes in product(range(8), repeat=n):
-                    r = np.array(outcomes, dtype=float)
-                    s = scores[list(outcomes)]
-                    # Independent pairwise expression for the LOO gradient.
-                    values.append(sum((r[i] - r[j]) * (s[i] - s[j])
-                                      for i in range(n) for j in range(i + 1, n)) / (n * (n - 1)))
-                    masses.append(np.prod(action.probs[list(outcomes)]))
-                gradient = a.temperature_loo(temperature, n)
-                assert_distribution(gradient, np.array(values), np.array(masses))
-                self.assertAlmostEqual(expect(gradient), derivative)
+            score = shared(action).op(
+                lambda a: a, lambda a: blog.temperature_score(a, expect(action), temperature))
             for baseline in (0., expect(action), -2.):
-                pair = a.temperature_baseline(temperature, baseline)
-                self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
-                self.assertAlmostEqual(expect(pair.sub()), derivative)
+                gradient = blog.reinforce_control(lambda a: a, baseline, score)
+                self.assertAlmostEqual(expect(gradient), derivative)
         for temperature in (0., -1., np.inf, np.nan):
             with self.assertRaises(ValueError):
-                a.temperature_policy(temperature)
+                intro_answers.temperature_policy(temperature)
+
+    def test_leave_one_out_baseline(self):
+        from intro_answers import leave_one_out, temperature_policy
+        for temperature in (0.7, 3.0, 8.0):
+            action = temperature_policy(temperature)
+            others = np.random.default_rng(11).choice(
+                action.values, size=4, p=action.probs)
+            self.assertEqual(leave_one_out(temperature, n=5), float(others.mean()))
         with self.assertRaises(ValueError):
-            a.temperature_loo(3., 1)
+            leave_one_out(3., n=1)
 
     def setUp(self):
         self.x = Var([-1, 1], [.5, .5])
@@ -70,32 +82,10 @@ class IntroTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             uniform(0.5, 3)
 
-    def test_four_sides(self):
-        from intro_answers import four_sides
-        from checks import check
-        die = four_sides(Var([0, 1], [.5, .5]))
-        self.assertIsInstance(die, Var)
-        self.assertDist(die, [1, 2, 3, 4], [.25]*4)
-        self.assertEqual(expect(die), 2.5)
-        self.assertEqual(covar(shared(die)), 1.25)
-        check("four", die, plot=False)
-        with self.assertRaises(AssertionError):
-            check("four", Var([1, 4], [.5, .5]), plot=False)
-
-    def test_six_sides(self):
-        from intro_answers import six_sides
-        from checks import check
-        die = six_sides(Var([0, 1], [.5, .5]))
-        self.assertIsInstance(die, Var)
-        self.assertDist(die, [1, 2, 3, 4, 5, 6], [1/6]*6)
-        self.assertAlmostEqual(expect(die), 3.5)
-        self.assertAlmostEqual(covar(shared(die)), 35/12)
-        check("six", die, plot=False)
-
     def test_monte_carlo(self):
-        from intro_answers import six_sides, monte_carlo, linear_control
+        from intro_answers import monte_carlo, linear_control
         from checks import check, f, linear_f
-        die = six_sides(Var([0, 1], [.5, .5]))
+        die = uniform(1, 7)
         one = monte_carlo(die.op(f), 1)
         ten = monte_carlo(die.op(f), 10)
         pair = linear_control(die, linear_f, 3)
@@ -123,74 +113,16 @@ class IntroTests(unittest.TestCase):
             self.assertAlmostEqual(expect(average), expect(self.y))
             self.assertAlmostEqual(covar(shared(average)), covar(shared(self.y))/n)
 
-    def test_problems_seven_to_nine(self):
-        from intro_answers import six_sides, quadratic_control, two_variables, additive, monte_carlo
-        from checks import check, f, quadratic_f, fxy, gxy
-        die = six_sides(Var([0, 1], [.5, .5]))
-        from intro_answers import sub
-        quadratic = monte_carlo(sub(quadratic_control(die, quadratic_f, 1, 2)), 5)
-        for name, result in (("quadratic", quadratic), ("xy", two_variables(die, fxy)),
-                             ("additive", additive(die, f, gxy))):
-            self.assertIsInstance(result, Var)
-            check(name, result, plot=False)
-        self.assertLess(covar(shared(quadratic)), covar(shared(monte_carlo(op(quadratic_f, die), 5))))
-        # Nonuniform inputs: integrate one independent coordinate exactly.
-        result = two_variables(self.y, lambda a, b: a + b)
-        self.assertAlmostEqual(expect(result), 2*expect(self.y))
-        self.assertAlmostEqual(covar(shared(result)), covar(shared(self.y))/5)
-
-    def test_remaining_puzzles(self):
-        import intro_answers as a
-        from checks import check
-        die = a.six_sides(Var([0, 1], [.5, .5]))
-        p, q = np.arange(1., 7.)/21, np.ones(6)/6
-        p_dist, q_dist = Var(np.arange(6), p), Var(np.arange(6), q)
-        theta = np.array([np.log(3.), 0.])
-        loo = shared(a.sub(a.reinforce_loo(theta))).op(lambda g: -g, lambda g: g)
-        examples = {"sum": a.two_dice(die), "weighted": a.weighted_die([1, 2, 3, 4, 5, 6]),
-                    "kl": a.monte_carlo(a.k1(p_dist, q_dist), 5),
-                    "k3": a.monte_carlo(a.k3(p_dist, q_dist), 5),
-                    "markov": a.markov_chain(Var([0, 1], [1., 0.]), Joint([0, 1], [0, 1], [[3/8, 1/8], [1/8, 3/8]])), "unigram": a.sub(a.markov_unigram(Var([0, 1], [1., 0.]), Joint([0, 1], [0, 1], [[3/8, 1/8], [1/8, 3/8]]))),
-                    "reinforce": a.reinforce(theta), "loo": loo}
-        for name, result in examples.items():
-            self.assertIsInstance(result, Joint if name in {"reinforce", "loo"} else Var)
-            check(name, result, plot=False)
-        self.assertDist(a.weighted_die([0, 1, 3]), [2, 3], [.25, .75])
-        self.assertLess(covar(shared(examples["unigram"])), covar(shared(examples["markov"])))
-
-    def test_binary_gradients(self):
-        from itertools import product
-        import intro_answers as a
-        from checks import assert_distribution
-        for theta in (np.array([0., 0.]), np.array([-.4, .8])):
-            probs = a.binary_policy(theta).probs
-            for n in (2, 3, 4):
-                values, masses = [], []
-                for outcomes in product((0, 1), repeat=n):
-                    rewards = np.array(outcomes, dtype=float)
-                    scores = np.eye(2)[list(outcomes)] - probs
-                    baseline = (rewards.sum()-rewards)/(n-1)
-                    values.append(((rewards-baseline)[:, None]*scores).mean(axis=0))
-                    masses.append(np.prod(probs[list(outcomes)]))
-                pair = a.reinforce_loo(theta, n)
-                self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
-                corrected = shared(a.sub(pair)).op(lambda g: -g, lambda g: g)
-                assert_distribution(corrected, np.array(values), np.array(masses))
-                result = a.reinforce(theta, n)
-                self.assertAlmostEqual(expect(a.marginal(result)), -probs.prod())
-                self.assertAlmostEqual(expect(a.marginal(a.transpose(result))), probs.prod())
-
     def test_control_pairs(self):
         import intro_answers as a
         from checks import linear_f, quadratic_f
-        x = a.six_sides(Var([0, 1], [.5, .5]))
+        x = uniform(1, 7)
         p, q = np.arange(1., 7.)/21, np.ones(6)/6
         p_dist, q_dist = Var(np.arange(6), p), Var(np.arange(6), q)
         for pair in (a.linear_control(x, linear_f, 3), a.quadratic_control(x, quadratic_f, 1, 2),
                      a.control_variate(p_dist,
                          lambda z: p_dist.log_prob(z)-q_dist.log_prob(z),
-                         lambda z: 1-q_dist.prob(z)/p_dist.prob(z), 0),
-                     a.markov_unigram(Var([0, 1], [1., 0.]), Joint([0, 1], [0, 1], [[3/8, 1/8], [1/8, 3/8]])), a.reinforce_loo(np.array([np.log(3.), 0.]))):
+                         lambda z: 1-q_dist.prob(z)/p_dist.prob(z), 0)):
             self.assertIsInstance(pair, Joint)
             estimate, control = marginal(pair), marginal(transpose(pair))
             self.assertAlmostEqual(expect(control), 0)
@@ -198,25 +130,11 @@ class IntroTests(unittest.TestCase):
             self.assertAlmostEqual(covar(shared(a.sub(pair))),
                                    covar(shared(estimate)) + covar(shared(control)) - 2*covar(pair))
 
-    def test_independent_two_variable_monte_carlo(self):
-        from intro_answers import independent_two_variables, six_sides, variance
-        from checks import check, fxy
-        die = six_sides(Var([0, 1], [.5, .5]))
-        result = independent_two_variables(die, die, fxy)
-        check("xy_mc", result, plot=False)
-        one = indep(die, die)._binop(fxy)
-        self.assertAlmostEqual(expect(result), expect(one))
-        self.assertAlmostEqual(variance(result), variance(one)/5)
-        result = independent_two_variables(self.x, self.y, lambda a, b: a*b)
-        one = indep(self.x, self.y)._binop(lambda a, b: a*b)
-        self.assertAlmostEqual(expect(result), expect(one))
-        self.assertAlmostEqual(variance(result), variance(one)/5)
-
     def test_kl_var_interface(self):
         import intro_answers as a
         p = Var([2, 7], [.3, .7])
         q = Var([7, 2], [.4, .6])
-        estimate = a.k1(p, q)
+        estimate = blog.k1(p, q)
         target = .3*np.log(.3/.6) + .7*np.log(.7/.4)
         self.assertAlmostEqual(a.kl(p, q), target)
         self.assertEqual(a.kl(p, p), 0)
@@ -224,44 +142,19 @@ class IntroTests(unittest.TestCase):
         self.assertEqual(a.kl(Var([2, 7], [1, 0]), Var([2], [1])), 0)
         self.assertEqual(a.kl(Var([2, 2], [.3, .7]), Var([2], [1])), 0)
         self.assertAlmostEqual(expect(estimate), target)
-        corrected = a.k3(p, q)
-        pair = a.kl_k3(p, q)
+        corrected = blog.kl_k3(p, q).sub()
+        pair = blog.kl_k3(p, q)
         self.assertIsInstance(pair, Joint)
         self.assertAlmostEqual(expect(marginal(pair)), target)
         self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
         self.assertDist(pair.sub(), corrected.values, corrected.probs)
         self.assertAlmostEqual(expect(corrected), target)
         self.assertTrue(np.all(corrected.values[corrected.probs > 0] >= -1e-12))
-        squared = a.k2(p, q)
+        squared = blog.k2(p, q)
         self.assertAlmostEqual(expect(squared),
             .5*(.3*np.log(.3/.6)**2 + .7*np.log(.7/.4)**2))
         self.assertFalse(np.isclose(expect(squared), target))
         self.assertAlmostEqual(a.variance(a.monte_carlo(estimate, 5)), a.variance(estimate)/5)
-
-    def test_markov_joint_transition(self):
-        import intro_answers as a
-        transition = np.array([[.75, .25], [.25, .75]])
-        T = Joint([2, 7], [2, 7], np.array([.2, .8])[:, None]*transition)
-        state = Var([2, 7], [.3, .7])
-        self.assertDist(a.propagate(state, T), [2, 7], state.probs @ transition)
-        for weights in ([.5, .5], [.2, .8]):
-            T = Joint([2, 7], [2, 7], np.array(weights)[:, None]*transition)
-            for steps in (0, 1, 3, 5):
-                for probs in ([1., 0.], [.3, .7]):
-                    result = a.markov_chain(Var([2, 7], probs), T, steps)
-                    self.assertDist(result, [2, 7], np.array(probs) @ np.linalg.matrix_power(transition, steps))
-
-    def test_unigram_with_supplied_state_and_transition(self):
-        import intro_answers as a
-        T = Joint([2, 7], [2, 7], [[.3, .1], [.12, .48]])
-        state = Var([2, 7], [.3, .7])
-        for steps in (0, 1, 3, 6):
-            pair = a.markov_unigram(state, T, steps)
-            expected = a.markov_chain(state, T, steps)
-            self.assertDist(marginal(pair), expected.values, expected.probs)
-            self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
-            self.assertAlmostEqual(expect(pair.sub()), expect(expected))
-        self.assertAlmostEqual(a.variance(a.markov_unigram(state, T, 1).sub()), 0)
 
     def test_generic_topk(self):
         import intro_answers as a
@@ -281,22 +174,22 @@ class IntroTests(unittest.TestCase):
         from checks import check
         p = a.weighted_die([1, 2, 3, 4, 5, 6])
         q = uniform(1, 7)
-        baseline = a.k1(p, q)
+        baseline = blog.k1(p, q)
         target = expect(baseline)
         for k in range(7):
-            estimate = a.kl_topk(p, q, k)
+            estimate = blog.kl_topk(p, q, k)
             self.assertAlmostEqual(expect(estimate), target)
-        zero = a.kl_topk(p, q, 0)
+        zero = blog.kl_topk(p, q, 0)
         self.assertDist(zero, baseline.values, baseline.probs)
-        self.assertAlmostEqual(a.variance(a.kl_topk(p, q, 6)), 0)
-        check("topk", a.monte_carlo(a.kl_topk(p, q, 3), 5), plot=False)
-        self.assertLess(a.variance(a.k3(p, q)), a.variance(baseline))
+        self.assertAlmostEqual(a.variance(blog.kl_topk(p, q, 6)), 0)
+        check("topk", a.monte_carlo(blog.kl_topk(p, q, 3), 5), plot=False)
+        self.assertLess(a.variance(blog.kl_k3(p, q).sub()), a.variance(baseline))
         for k in (-1, 7):
             with self.assertRaises(ValueError):
-                a.kl_topk(p, q, k)
+                blog.kl_topk(p, q, k)
         p = Var([2, 7], [.3, .7])
         q = Var([2, 7], [.6, .4])
-        result = a.kl_topk(p, q, 1)
+        result = blog.kl_topk(p, q, 1)
         exact = .7*np.log(.7/.4)
         self.assertDist(result, [exact+.3*np.log(.3/.6)], [1.0])
 
@@ -310,43 +203,9 @@ class IntroTests(unittest.TestCase):
         exact = terms[0]
         expected = Var([exact + .4*np.log(.3/.1), exact + .4*np.log(.1/.01)],
                        [.75, .25])
-        actual = a.kl_topk(p, q, 1)
+        actual = blog.kl_topk(p, q, 1)
         self.assertDist(actual, expected.values, expected.probs)
         self.assertAlmostEqual(expect(actual), a.kl(p, q))
-
-    def test_circle_rejection(self):
-        from intro_answers import circle
-        coordinate = Var(np.arange(11), np.ones(11)/11)
-        for radius in (0, 5, 10):
-            disk = circle(coordinate, coordinate, radius)
-            accepted = np.array([[(x-5)**2+(y-5)**2 <= radius*radius for y in range(11)]
-                                 for x in range(11)])
-            np.testing.assert_allclose(disk.probs, accepted/accepted.sum())
-            self.assertAlmostEqual(disk.probs.sum(), 1)
-        disk = circle(coordinate, coordinate, 5)
-        self.assertGreater(disk.probs[0, 5], 0)
-        self.assertEqual(disk.probs[10, 10], 0)
-        self.assertEqual(np.count_nonzero(disk.probs), 81)
-        from viz import joint_top_view
-        import matplotlib.pyplot as plt
-        fig = joint_top_view(disk, show=False)
-        self.assertEqual(len(fig.axes[0].collections[1].get_offsets()), 81)
-        plt.close(fig)
-
-    def test_explicit_marginal_control(self):
-        import intro_answers as a
-        j = Joint([0, 1, 3, 4], [0, 3],
-                  [[.25, 0], [.25, 0], [0, .25], [0, .25]])
-        pair = a.marginal_control(j)
-        self.assertDist(marginal(transpose(pair)), [-1.5, 1.5], [.5, .5])
-        self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
-        self.assertAlmostEqual(covar(pair), 2.25)
-        result = a.monte_carlo(pair.sub(), 5)
-        self.assertAlmostEqual(expect(result), expect(marginal(j)))
-        self.assertAlmostEqual(a.variance(result), .05)
-        keep = result.probs > 0
-        np.testing.assert_allclose(result.values[keep], np.arange(6)/5+1.5)
-        np.testing.assert_allclose(result.probs[keep], np.array([1, 5, 10, 10, 5, 1])/32)
 
     def test_ab_sampling_and_initial_control(self):
         import intro_answers as a
@@ -366,105 +225,18 @@ class IntroTests(unittest.TestCase):
         np.testing.assert_allclose(result.values[keep], [0, 1, 2])
         np.testing.assert_allclose(result.probs[keep], [.25, .5, .25])
 
-    def test_learned_cuped_and_baseline(self):
-        import intro_answers as a
-        z = np.array([0., 0., 1., 1.])
-        y = np.array([0., 1., 2., 3.])
-        self.assertAlmostEqual(a.fit_cuped(z, y), 2)
-        self.assertAlmostEqual(a.fit_cuped(np.ones(4), y), 0)
-        population = Var([0, 1, 2, 3], [.25]*4)
-        b = a.fit_cuped(z, y)
-        estimate = a.ab_test(population, lambda s: s+1, lambda s: s,
-                             lambda s: s//2, b, 5)
-        self.assertAlmostEqual(expect(estimate), 1)
-        self.assertAlmostEqual(a.variance(estimate), .1)
-        baseline = a.fit_baseline(np.array([0., 0., 0., 1.]))
-        self.assertAlmostEqual(baseline, .25)
-        reward = Var([0, 1], [.75, .25])
-        for fitted in (baseline, 0., 1., -2.):
-            pair = a.estimated_baseline(reward, fitted)
-            self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
-            self.assertAlmostEqual(expect(pair.sub()), .1875)
-        pair = a.estimated_baseline(reward, baseline)
-        self.assertAlmostEqual(a.variance(pair.sub()), .046875)
-        self.assertLess(a.variance(pair.sub()), a.variance(marginal(pair)))
-
-    def test_cuped_leave_one_out(self):
-        import intro_answers as a
-        population=uniform(0,4)
-        initial=lambda person: person//2
-        control=lambda person: person
-        treatment=lambda person: person+1
-        with patch('numpy.random.default_rng',side_effect=AssertionError('No randomness')):
-            with patch.object(a,'expect',side_effect=AssertionError('No population moments in fit')):
-                treated=a.cuped(population,treatment,initial,.5,5)
-                untreated=a.cuped(population,control,initial,.5,5)
-        result=indep(treated,untreated).sub()
-        self.assertAlmostEqual(expect(result),1)
-        raw=a.ab_sampling(population,treatment,control,5)
-        self.assertLess(a.variance(result),a.variance(raw))
-        # Retaining fitting uncertainty differs from using the ideal fixed b=2.
-        fixed=a.ab_test(population,treatment,control,initial,2,5)
-        self.assertGreater(a.variance(result),a.variance(fixed))
-
-    def test_cuped_fits_only_other_samples(self):
-        import intro_answers as a
-        samples=(0.,1.,2.,3.)
-        def evaluate(draw,steps,statistic,**kwargs):
-            return Var([statistic(samples)],[1])
-        with patch.object(a,'iid_statistic',side_effect=evaluate):
-            with patch.object(a,'fit_cuped',wraps=a.fit_cuped) as fit:
-                a.cuped(uniform(0,4),lambda person: person,lambda person: person//2,.5,4)
-        self.assertEqual(fit.call_count,4)
-        for i,call in enumerate(fit.call_args_list):
-            others=[person for j,person in enumerate(samples) if i!=j]
-            np.testing.assert_array_equal(call.args[0],[person//2 for person in others])
-            np.testing.assert_array_equal(call.args[1],others)
-
-    def test_cuped_unbiased_with_random_and_degenerate_fits(self):
-        import intro_answers as a
-        population=Var([0,1,2],[.1,.3,.6])
-        outcome=lambda person: person**2+person
-        for initial in (lambda person: person,lambda person: 1):
-            known_mean=expect(population.op(initial))
-            for steps in (2,3,4):
-                result=a.cuped(population,outcome,initial,known_mean,steps)
-                self.assertAlmostEqual(expect(result),expect(population.op(outcome)))
-                self.assertAlmostEqual(sum(result.probs),1)
-                self.assertTrue(np.isfinite(result.values).all())
-
-    def test_group_rewards(self):
-        import intro_answers as a
-        from viz import variance_sum_3d
-        import matplotlib.pyplot as plt
-        model = a.four_sides(Var([0, 1], [.5, .5]))
-        positive = a.group_rewards(model, lambda x: float(x >= 3), lambda x: float(x >= 2))
-        negative = a.group_rewards(model, lambda x: float(x >= 3), lambda x: float(x <= 3))
-        independent = indep(marginal(positive), marginal(transpose(positive)))
-        for pair, cross, var in ((positive, 1/8, 11/16), (negative, -1/8, 3/16),
-                                 (independent, 0, 7/16)):
-            self.assertAlmostEqual(expect(pair.add()), 1.25)
-            self.assertAlmostEqual(covar(pair), cross)
-            self.assertAlmostEqual(a.group_variance(pair), var)
-            self.assertAlmostEqual(a.variance(pair.add()), var)
-            fig = variance_sum_3d(pair, show=False)
-            self.assertTrue(fig.axes[-1].get_title().startswith("sum variance"))
-            plt.close(fig)
-        self.assertDist(positive.add(), [0, 1, 2], [.25, .25, .5])
-        self.assertDist(negative.add(), [0, 1, 2], [0, .75, .25])
-
     def test_histogram_merges_float_duplicates(self):
-        from viz import _scalar_mass, _plot_dist
+        from viz import _scalar_mass
         x = Var([.7999999999999998, .8, .8000000000000003, .804, .82],
                 [.1, .2, .3, .1, .3])
-        values, mass = _scalar_mass(_plot_dist(x))
+        values, mass = _scalar_mass(x)
         np.testing.assert_allclose(values, [.8, .804, .82])
         np.testing.assert_allclose(mass, [.6, .1, .3])
         self.assertEqual(len(x.values), 5)
         import intro_answers as a
         population = Var([0, 1, 2, 3], [.25]*4)
         result = a.ab_sampling(population, lambda s: s+1, lambda s: s, 5)
-        values, mass = _scalar_mass(_plot_dist(result))
+        values, mass = _scalar_mass(result)
         self.assertEqual(len(values), 31)
         self.assertAlmostEqual(mass.sum(), 1)
 
@@ -585,20 +357,8 @@ class IntroTests(unittest.TestCase):
         self.assertFalse(np.allclose(dots1[0].x,dots4[0].x))
         self.assertIn('32',html)
 
-    def test_square_and_triangle_sum(self):
-        from intro_answers import square, triangular, two_triangles, variance
-        x=Var([-2,1,2],[.2,.3,.5])
-        self.assertAlmostEqual(expect(square(x,2)),3.1)
-        self.assertAlmostEqual(expect(square(x,0)),1)
-        self.assertAlmostEqual(expect(square(Var([1,4],[.5,.5]),.5)),1.5)
-        tri=triangular(Var(np.arange(11),np.ones(11)/11),Var(np.arange(1,7)/6,np.ones(6)/6))
-        summed=two_triangles(tri)
-        np.testing.assert_allclose(summed.values,np.arange(21))
-        np.testing.assert_allclose(summed.probs,np.convolve(tri.probs,tri.probs))
-        self.assertAlmostEqual(variance(summed),2*variance(tri))
-
     def test_plotly_histogram(self):
-        from plotly_viz import _histogram_figure, _covariance_figure, square_slider
+        from plotly_viz import _histogram_figure, _covariance_figure
         fig=_histogram_figure(self.x)
         self.assertEqual(fig.layout.yaxis.range[0],0)
         self.assertEqual(fig.data[-1].mode,"markers")
@@ -611,7 +371,6 @@ class IntroTests(unittest.TestCase):
         joint,boxes,mapping=_covariance_figure(indep(self.x,self.y),boxes=False)
         self.assertTrue(all(joint.data[i].visible is False for i in boxes))
         self.assertEqual(len(joint.layout.shapes),1)
-        self.assertIn('b = ',square_slider(Var([1,4],[.5,.5])).data)
 
     def test_foreground_variance_and_coin_slider(self):
         from plotly_viz import _covariance_figure, coin_variance_slider
@@ -712,55 +471,6 @@ class IntroTests(unittest.TestCase):
         self.assertAlmostEqual(expect(result),3)
         self.assertAlmostEqual(variance(result),variance(red)/18+variance(blue)/9)
 
-    def test_iid_statistic(self):
-        from intro_answers import iid_statistic, monte_carlo, variance
-        draw=Var([1,2,3,4],[.1,.2,.3,.4])
-        seen=[]
-        def statistic(samples):
-            self.assertIsInstance(samples,tuple)
-            self.assertEqual(len(samples),3)
-            seen.append(samples)
-            return sum(samples)/3
-        result=iid_statistic(draw,3,statistic)
-        reference=monte_carlo(draw,3)
-        self.assertEqual(len(seen),4**3)
-        self.assertDist(result,reference.values,reference.probs)
-        self.assertAlmostEqual(variance(result),variance(reference))
-
-    def test_iid_statistic_symmetry(self):
-        from intro_answers import iid_statistic
-        draw=Var([0,1,2],[.2,.5,.3])
-        statistic=lambda samples: sum(samples)**2
-        ordered=iid_statistic(draw,4,statistic)
-        symmetric=iid_statistic(draw,4,statistic,symmetric=True)
-        self.assertDist(symmetric,ordered.values,ordered.probs)
-        # Default mode preserves order for statistics that depend on it.
-        first=iid_statistic(draw,3,lambda samples: samples[0])
-        self.assertDist(first,draw.values,draw.probs)
-
-    def test_iid_statistic_uses_scalar_binop(self):
-        import intro_answers as a
-        original=a.binop
-        def scalar_binop(f,j):
-            self.assertEqual(j._x.dtype.kind,'f')
-            self.assertEqual(j._y.dtype.kind,'f')
-            result=original(f,j)
-            self.assertEqual(result.values.dtype.kind,'f')
-            return result
-        with patch.object(a,'binop',side_effect=scalar_binop) as combine:
-            result=a.iid_statistic(Var([0,1],[.75,.25]),3,sum)
-        self.assertEqual(combine.call_count,3)
-        self.assertDist(result,[0,1,2,3],[.75**3,3*.75**2*.25,3*.75*.25**2,.25**3])
-        leading_zeros=a.iid_statistic(Var([2,7],[.6,.4]),3,
-                                      lambda samples: 100*samples[0]+10*samples[1]+samples[2])
-        self.assertAlmostEqual(leading_zeros.prob(227),.6*.6*.4)
-        def positive_only(samples):
-            self.assertEqual(samples,(7.,7.,7.))
-            return sum(samples)
-        self.assertDist(a.iid_statistic(Var([2,7],[0,1]),3,positive_only),[21],[1])
-        with self.assertRaises(OverflowError):
-            a.iid_statistic(Var([0,1],[.5,.5]),54,sum)
-
     def test_dense_plot_labels(self):
         from plotly_viz import _covariance_figure, _label_indices
         np.testing.assert_array_equal(_label_indices(8),np.arange(8))
@@ -782,11 +492,6 @@ class IntroTests(unittest.TestCase):
             self.assertEqual(axis.get_major_formatter()(1.23456, 0), "1.23")
         plt.close(fig)
 
-    def test_div(self):
-        from intro_answers import div
-        self.assertDist(div(indep(self.x, Var([2], [1.0]))), [-.5, .5], [.5, .5])
-        self.assertDist(div(shared(self.x)), [-1, 1], [0, 1])
-        self.assertDist(div(indep(self.x, self.x)), [-1, 1], [.5, .5])
 
     def test_attached_operations(self):
         import intro_answers as a
@@ -797,27 +502,6 @@ class IntroTests(unittest.TestCase):
         with patch.object(a, "op", return_value=Var([9], [1.0])) as replacement:
             self.assertDist(self.x.op(lambda z: z), [9], [1])
             replacement.assert_called_once()
-
-    def test_reorganized_exercises(self):
-        import intro_answers as a
-        from checks import check
-        eight = Var(np.arange(1, 9), np.ones(8)/8)
-        self.assertDist(a.shift(eight, 2), np.arange(3, 11), np.ones(8)/8)
-        self.assertEqual(a.variance(eight), 5.25)
-        check("six", a.six_from_eight(eight), plot=False)
-        coins = Joint([0, 1], [0, 1], [[1/8, 3/8], [1/8, 3/8]])
-        self.assertEqual(expect(marginal(coins)), .5)
-        self.assertEqual(expect(marginal(transpose(coins))), .75)
-        self.assertDist(coins.add(), [0, 1, 2], [1/8, 1/2, 3/8])
-        candidate = Var(np.arange(11), np.ones(11)/11)
-        uniform = Var(np.arange(1, 7)/6, np.ones(6)/6)
-        triangle = a.triangular(candidate, uniform)
-        check("triangular", triangle, plot=False)
-        self.assertAlmostEqual(expect(triangle), 5)
-        self.assertAlmostEqual(a.variance(triangle), 35/6)
-        # Conditioning an independent pair creates dependence.
-        accepted = indep(candidate, uniform).cond(lambda x, u: u <= (6-abs(x-5))/6)
-        self.assertAlmostEqual(accepted.probs.sum(), 1)
 
     def test_condition(self):
         from intro_answers import condition
@@ -962,7 +646,6 @@ class IntroTests(unittest.TestCase):
             fig = histogram(add(indep(self.x, self.x)), without=add(shared(self.x)), show=False)
             self.assertEqual(fig.axes[0].get_ylim()[0], 0)
             plt.close(fig)
-
 
 if __name__ == "__main__":
     unittest.main()

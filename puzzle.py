@@ -41,25 +41,19 @@
 
 # - srush
 # %% tags=["hide"]
-import jax
-jax.config.update("jax_enable_x64", True)
-
-from checks import check, f, linear_f, quadratic_f, fxy
+from checks import check, f, linear_f, quadratic_f
 import numpy as np
-from viz import variance_3d, covariance_3d, coin_variance_animation
+from viz import covariance_3d
 from IPython.display import display
 
 # %% tags=["hide"]
 from dist_types import Fn, Var, Joint
 from intro_answers import (
-    stratify, expect, six_from_eight, uniform, variance, indep, shared, marginal,
-    covar, transpose, add, sub, div, four_sides, six_sides, two_triangles,
-    triangular, circle, linear_control, independent_two_variables, quadratic_control,
-    two_variables, weighted_die, ab_sampling, ab_test, markov_chain,
-    markov_unigram, group_rewards, group_variance,
-    fit_baseline, kl, topk, propagate, leave_one_out,
+    stratify, uniform, indep, shared, covar, add, sub,
+    linear_control, quadratic_control, weighted_die, ab_sampling, ab_test,
+    kl, topk, leave_one_out,
 )
-from viz import density, histogram, histogram_row, variance_reduction_3d, variance_sum_3d, joint_top_view, show_control
+from viz import density, histogram, histogram_row, variance_reduction_3d, show_control
 from plotly_viz import (
     scaled_variance_slider, covariance_interpolation_slider,
     coin_variance_slider, linear_control_widget, sum_variance_slider,

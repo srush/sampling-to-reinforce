@@ -1,13 +1,12 @@
 """Mystery functions and independent full-distribution checks for the puzzles."""
 
 from collections import Counter
-from itertools import combinations_with_replacement, product
+from itertools import combinations_with_replacement
 from math import factorial, prod
 
 import numpy as np
-import jax.numpy as jnp
 
-from viz import density, histogram, variance_3d, gradient_distribution
+from viz import density, histogram, variance_3d
 from dist_types import Var, Joint
 
 
@@ -17,11 +16,11 @@ def _table(rv):
     if isinstance(rv, Joint):
         x, y = np.meshgrid(rv._x, rv._y, indexing="ij")
         return np.column_stack([x.ravel(), y.ravel()]), rv.probs.ravel()
-    return rv.table()
+    raise TypeError("Expected Var or Joint")
 
 
 def f(x):
-    return jnp.array([9., 10., 13., 15., 20., 26.])[jnp.asarray(x, dtype=int)-1]
+    return np.array([9., 10., 13., 15., 20., 26.])[np.asarray(x, dtype=int)-1]
 
 
 def polling_response(person: float) -> float:
@@ -32,19 +31,11 @@ def polling_response(person: float) -> float:
 
 
 def linear_f(x):
-    return 10 + 3*x + jnp.array([1., -1., 0., 1., -1., 0.])[jnp.asarray(x, dtype=int)-1]
+    return 10 + 3*x + np.array([1., -1., 0., 1., -1., 0.])[np.asarray(x, dtype=int)-1]
 
 
 def quadratic_f(x):
-    return x**2 + 2*x + jnp.array([0., 1., -1., 1., 0., -1.])[jnp.asarray(x, dtype=int)-1]
-
-
-def fxy(x, y):
-    return f(x) + (y-3.5)*(x+2)
-
-
-def gxy(x, y):
-    return (x-y)**2 / 4
+    return x**2 + 2*x + np.array([0., 1., -1., 1., 0., -1.])[np.asarray(x, dtype=int)-1]
 
 
 def _mean_distribution(values, n, offset=0.0, probabilities=None):
@@ -63,15 +54,6 @@ def _mean_distribution(values, n, offset=0.0, probabilities=None):
 def _reference(name):
     die = np.arange(1, 7)
     fx = np.array([float(f(int(x))) for x in die])
-    if name == "four":
-        return np.arange(1, 5), np.ones(4)/4, None
-    if name == "six":
-        return die, np.ones(6)/6, None
-    if name == "sum":
-        return np.arange(2, 13), np.array([1,2,3,4,5,6,5,4,3,2,1])/36, None
-    if name == "triangular":
-        values = np.arange(11)
-        return values, (6-np.abs(values-5))/36, None
     if name == "single":
         return fx, np.ones(6)/6, fx.mean()
     if name == "ten":
@@ -85,24 +67,6 @@ def _reference(name):
         values = np.array([float(quadratic_f(int(x))) for x in die])
         v, p = _mean_distribution(values-die**2-2*die, 5, offset=91/6+7)
         return v, p, values.mean()
-    if name == "xy_mc":
-        samples = [float(fxy(int(x), int(y))) for x in die for y in die]
-        sums = {0.: 1.}
-        for _ in range(5):
-            next_sums = Counter()
-            for total, prob in sums.items():
-                for value in samples:
-                    next_sums[total+value] += prob/36
-            sums = next_sums
-        return np.array(list(sums))/5, np.array(list(sums.values())), np.mean(samples)
-    if name in {"xy", "additive"}:
-        fn = fxy if name == "xy" else gxy
-        table = np.array([[float(fn(int(x), int(y))) for y in die] for x in die])
-        offset = 0 if name == "xy" else fx.mean()
-        v, p = _mean_distribution(table.mean(axis=1), 5, offset=offset)
-        return v, p, table.mean()+offset
-    if name == "weighted":
-        return die, die/21, None
     if name in {"kl", "k3", "topk"}:
         p, q = die/21, np.ones(6)/6
         values = np.log(p/q)
@@ -115,33 +79,6 @@ def _reference(name):
             values = exact + tail_mass * values[:3]
             p = p[:3] / tail_mass
         v, mass = _mean_distribution(values, 5, probabilities=p)
-        return v, mass, target
-    if name in {"markov", "unigram"}:
-        transition = np.array([[.75, .25], [.25, .75]])
-        target = (np.array([1., 0.]) @ np.linalg.matrix_power(transition, 3))[1]
-        values = []
-        for noise in product(range(4), repeat=3):
-            state = 0
-            for u in noise:
-                state = int(u < (1 if state == 0 else 3))
-            values.append(state if name == "markov" else state-int(noise[-1] == 0)+.25)
-        return np.array(values), np.ones(64)/64, target
-    if name in {"reinforce", "loo"}:
-        p = np.array([.75, .25])
-        rewards = np.array([0., 1.])
-        score = np.eye(2)-p
-        target = np.array([-.1875, .1875])
-        if name == "reinforce":
-            v, mass = rewards[:, None]*score, p
-        else:
-            v, mass = [], []
-            for indices in product(range(2), repeat=3):
-                r, s = rewards[list(indices)], score[list(indices)]
-                # Independent pairwise form of the leave-one-out estimator.
-                v.append(sum((r[i]-r[j])*(s[i]-s[j])
-                             for i in range(3) for j in range(i+1, 3))/6)
-                mass.append(np.prod(p[list(indices)]))
-            v, mass = np.array(v), np.array(mass)
         return v, mass, target
     raise KeyError(name)
 
@@ -173,17 +110,13 @@ def assert_distribution(rv, expected_values, expected_mass):
 
 
 TITLES = {
-    "xy_mc": "Independent two-variable Monte Carlo",
-    "triangular": "4 · Triangular distribution",
-    "four": "1 · Four sides", "six": "2 · Six sides by rejection",
-    "sum": "3 · Two dice", "single": "4 · One sample", "ten": "5 · Ten samples",
-    "linear": "6 · Linear control variate", "quadratic": "7 · Quadratic control variate",
-    "xy": "8 · Average out y", "additive": "9 · Average out the known part",
-    "weighted": "10 · Weighted dice from fair coins", "kl": "11 · Monte Carlo KL",
+    "single": "4 · One sample",
+    "ten": "5 · Ten samples",
+    "linear": "6 · Linear control variate",
+    "quadratic": "7 · Quadratic control variate",
+    "kl": "11 · Monte Carlo KL",
     "k3": "12 · k3 KL control variate",
     "topk": "15 · Unbiased top-k KL",
-    "markov": "13 · Two-state Markov chain", "unigram": "14 · Unigram control variate",
-    "reinforce": "15 · Two-dimensional Reinforce", "loo": "16 · Leave-one-out Reinforce",
 }
 
 
@@ -212,8 +145,6 @@ def check(name, rv, plot=True, without=None, verbose=False,
             if without is not None:
                 raise ValueError("Use the comparison plot for control variates")
             variance_3d(rv)
-        elif isinstance(rv, Joint):
-            gradient_distribution(rv, TITLES[name], target, without=without)
         elif density_view:
             density(rv, without=without)
         else:

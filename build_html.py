@@ -4,7 +4,6 @@ from contextlib import redirect_stdout
 from html import escape
 from io import StringIO
 from pathlib import Path
-import inspect
 import os
 import re
 import sys
@@ -17,15 +16,12 @@ from markdown_it import MarkdownIt
 from pygments import highlight
 from pygments.lexers import PythonLexer
 from pygments.formatters import HtmlFormatter
-import intro_answers
 import IPython.display
 
 
 def build(profile=False):
     root = Path(__file__).resolve().parent
     notebook = jupytext.read(root / "puzzle.py")
-    local_definitions = {name for cell in notebook.cells if cell.cell_type == "code"
-                         for name in re.findall(r"^def (\w+)\(", cell.source, re.MULTILINE)}
     formatter = HtmlFormatter()
     markdown = MarkdownIt("commonmark")
     def render_markdown(source):
@@ -36,24 +32,7 @@ def build(profile=False):
     namespace = {"__name__": "__main__"}
     timings = []
     sections, images = [], []
-    section_nav = []
     section_open = False
-    names = ("four_sides", "six_sides", "triangular", "weighted_die", "two_triangles", "monte_carlo",
-                         "monte_carlo", "independent_two_variables", "linear_control", "quadratic_control",
-                         "two_variables", "additive", "k1", "kl_k3", "kl_topk",
-                         "markov_chain", "markov_unigram", "group_rewards", "reinforce", "reinforce_loo")
-    titles = ["Four sides","Six sides","Triangular distribution","Weighted dice from fair coins","Two dice","One sample","Monte Carlo · ten samples","Independent two-variable Monte Carlo","A roughly linear control variate","Five samples, a roughly parabolic function","Five samples, two variables","Five samples, an additive function","k1 KL estimate","k3 KL control variate","Unbiased top-k KL","A two-state Markov chain","A unigram control variate","Additive rewards from one model draw","Reinforce with a two-dimensional gradient","Reinforce with leave-one-out"]
-    titles[4] = "Two triangles"
-    answers = dict(zip(titles, names))
-    # These estimators are defined in the visible notebook cells.
-    answers.pop("k1 KL estimate")
-    answers.pop("k3 KL control variate")
-    answers.pop("Reinforce with leave-one-out")
-    question_ids = {title: f"puzzle-{i}" for i, title in enumerate(titles, 1)}
-    # Keep later puzzle IDs stable while removing this example from the page.
-    answers.pop("Five samples, an additive function")
-    question_ids.pop("Five samples, an additive function")
-
     def code(source):
         return highlight(source, PythonLexer(), formatter)
 
@@ -74,30 +53,15 @@ def build(profile=False):
                     if section_open:
                         sections.append("</section>")
                     heading = cell.source.splitlines()[0][3:]
-                    section_id = question_ids.get(heading, heading.lower().replace(" · ", "-").replace(" ", "-").replace(":", "").replace("/", ""))
+                    section_id = heading.lower().replace(" · ", "-").replace(" ", "-").replace(":", "").replace("/", "")
                     sections.append(f'<section id="{escape(section_id)}" class="puzzle">')
-                    if heading.startswith("Section "):
-                        section_nav.append((section_id, heading.split(" · ", 1)[-1]))
                     section_open = True
                     sections.append(render_markdown(cell.source))
-                    if heading.startswith(("Exercise · ", "Helper · ")):
-                        name = heading.split(" · ", 1)[1]
-                        if name not in local_definitions and hasattr(intro_answers, name):
-                            sections.append(code(inspect.getsource(getattr(intro_answers, name))))
-                    if heading not in answers:
-                        continue
-                    name = answers[heading]
-                    answer = inspect.getsource(getattr(intro_answers, name))
-                    sections.append(code(answer))
                 else:
                     if not section_open:
                         sections.append('<section id="introduction" class="intro">')
                         section_open = True
                     sections.append(render_markdown(cell.source))
-                    if cell.source.startswith(("### Exercise · ", "### Helper · ")):
-                        name = cell.source.splitlines()[0].split(" · ", 1)[1]
-                        if name not in local_definitions and hasattr(intro_answers, name):
-                            sections.append(code(inspect.getsource(getattr(intro_answers, name))))
             elif cell.cell_type == "code":
                 output = StringIO()
                 images.clear()
@@ -126,7 +90,6 @@ def build(profile=False):
       font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
       font-size:1.2rem;line-height:1.6}
     main{width:58rem;max-width:100%;margin:auto;padding:0 2rem 8rem}
-    header{display:none}
     a{color:#305c78;text-decoration:underline;text-underline-offset:.15em;text-decoration-thickness:1px}
     a:hover{background:#edf2f5}a:focus-visible,summary:focus-visible{outline:2px solid #305c78;outline-offset:3px}
     h1,h2,h3{font-weight:400;line-height:1.15}
@@ -151,20 +114,17 @@ def build(profile=False):
       h2{font-size:2rem}.highlight{padding:.8rem}}
     @media print{main{width:100%;padding:0}.highlight{overflow:visible}pre{white-space:pre-wrap}}
     """
-    navigation = ''.join(f'<a href="#{escape(anchor)}">{escape(label)}</a>'
-                         for anchor, label in section_nav)
     html = ('<!doctype html><html lang="en"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>From Sampling to Reinforce</title><style>' + css + formatter.get_style_defs('.highlight') +
             '</style><script>' + plotly_bundle + '</script>'
             '<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>'
-            '<body><header><div><strong>RL Puzzles</strong></div><nav>' + navigation +
-            '</nav></header><main>' + ''.join(sections) +
+            '<body><main>' + ''.join(sections) +
             '</main></body></html>')
     output = root / 'build' / 'index.html'
     output.parent.mkdir(exist_ok=True)
     output.write_text(html)
-    print(f'Built {output} ({len(html):,} characters; {len(names)} checked plots)')
+    print(f'Built {output} ({len(html):,} characters)')
     if profile:
         for elapsed, number, label in sorted(timings, reverse=True)[:15]:
             print(f'{elapsed:6.2f}s  cell {number:3d}  {label}')

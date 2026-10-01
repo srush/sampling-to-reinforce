@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rl-puzzles"
 version = "0.1.0"
-description = "Finite random-variable experiments with eager JAX arrays"
+description = "Exact finite-distribution examples for From Sampling to Reinforce"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["jax>=0.4.30", "ipython>=8", "jupytext>=1.16", "plotly>=6", "markdown-it-py>=3", "Pygments>=2.17"]
+dependencies = ["numpy>=1.26", "ipython>=8", "jupytext>=1.16", "plotly>=6", "markdown-it-py>=3", "Pygments>=2.17"]
 
 [project.optional-dependencies]
 static-plots = ["matplotlib>=3.8"]
 
 [tool.setuptools]
-py-modules = ["distribution", "viz", "plotly_viz", "puzzles", "checks", "dist_types", "intro_answers"]
+py-modules = ["viz", "plotly_viz", "checks", "dist_types", "intro_answers"]
