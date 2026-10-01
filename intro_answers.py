@@ -1,7 +1,18 @@
 """Filled-in single-function answers for the Var/Joint exercises."""
 from typing import Callable
+from operator import index
 import numpy as np
 from dist_types import Var, Joint, _joint
+
+
+def uniform(a: int, b: int) -> Var:
+    """Uniform distribution on the integers a, a+1, ..., b-1."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        raise TypeError("Uniform bounds must be integers")
+    a, b = index(a), index(b)
+    if b <= a:
+        raise ValueError("The interval [a, b) must contain at least one integer")
+    return Var(np.arange(a, b), np.full(b-a, 1/(b-a)))
 
 
 def expect(x: Var) -> float:
@@ -31,6 +42,43 @@ def shared(x: Var) -> Joint:
 
 def indep(x: Var, y: Var) -> Joint:
     return _joint(x.values, y.values, np.outer(x.probs, y.probs))
+
+
+def _sample_indices(code: float, base: int, steps: int) -> tuple[int, ...]:
+    """Decode a scalar batch ID into support indices, including leading zeros."""
+    indices = []
+    code = int(code)
+    for _ in range(steps):
+        code, digit = divmod(code, base)
+        indices.append(digit)
+    return tuple(reversed(indices))
+
+
+def _sorted_sample_code(code: float, base: int, steps: int) -> int:
+    """Canonical ID for an unordered batch; binop merges its probability mass."""
+    result = 0
+    for digit in sorted(_sample_indices(code, base, steps)):
+        result = result*base + digit
+    return result
+
+
+def iid_statistic(draw: Var, steps: int,
+                  statistic: Callable[[tuple[float, ...]], float],
+                  *, symmetric: bool = False) -> Var:
+    """Compose scalar batch IDs; symmetric=True requires an order-invariant statistic."""
+    base = len(draw.values)
+    if base**steps > 2**53:
+        raise OverflowError("Batch IDs must fit exactly in the scalar float representation")
+    indices = Var(np.flatnonzero(draw.probs), draw.probs[draw.probs > 0])
+    batches = Var([0], [1])
+    for size in range(1, steps + 1):
+        def append(code, digit):
+            result = int(code)*base + int(digit)
+            return _sorted_sample_code(result, base, size) if symmetric else result
+        batches = indep(batches, indices)._binop(append)
+    return batches.op(lambda code: round(float(statistic(tuple(
+        draw.values[i] for i in _sample_indices(code, base, steps)
+    ))), 12))
 
 
 def op(f: Callable[[float], float], x: Var) -> Var:
@@ -128,30 +176,61 @@ def six_sides(coin: Var) -> Var:
     return eight.cond(lambda a: a <= 6)
 
 
-def single_sample(x: Var, f: Callable[[float], float]) -> Var:
-    return x.op(f)
-
-
 def monte_carlo(x: Var, steps: int) -> Var:
-    total = Var([0], [1.0])
+    total = uniform(0, 1)
     for _ in range(steps):
         total = add(indep(total, x))
-    return div(indep(total, Var([steps], [1.0])))
+    return div(indep(total, uniform(steps, steps + 1)))
 
 
-def ten_samples(x: Var, f: Callable[[float], float]) -> Var:
-    return monte_carlo(x.op(f), 10)
+def control_variate(x: Var, f: Callable[[float], float],
+                    h: Callable[[float], float], known_mean: float,
+                    b: float = 1) -> Joint:
+    """Pair f(X) with b*(h(X)-known_mean), using the same draw of X."""
+    return shared(x).op(f, lambda a: b*(h(a)-known_mean))
+
+
+def monte_carlo_with_control(pair: Joint, steps: int) -> Var:
+    return monte_carlo(pair.sub(), steps)
+
+
+def post_stratify(draw: Var, steps: int, red_share: float,
+                  group: Callable[[float], int], response: Callable[[float], float],
+                  fallback: float = 0) -> Var:
+    """Draw people first; fit group means using only the other sampled responses."""
+    def estimate(samples):
+        observations = [(int(group(person)), response(person)) for person in samples]
+        counts = [sum(h == g for h, y in observations) for g in (0, 1)]
+        totals = [sum(y for h, y in observations if h == g) for g in (0, 1)]
+        adjusted = []
+        for h, answer in observations:
+            means = []
+            for g in (0, 1):
+                count = counts[g] - (h == g)
+                total = totals[g] - (answer if h == g else 0)
+                means.append(total/count if count else fallback)
+            center = (1-red_share)*means[0] + red_share*means[1]
+            adjusted.append(answer - means[h] + center)
+        return sum(adjusted)/len(adjusted)
+    return iid_statistic(draw, steps, estimate, symmetric=True)
+
+
+def stratify(red_responses: Var, blue_responses: Var,
+             red_share: float, red_steps: int, blue_steps: int) -> Var:
+    """Weighted average of independent draws from each group's response law."""
+    red_poll = monte_carlo(red_responses, red_steps)
+    blue_poll = monte_carlo(blue_responses, blue_steps)
+    return indep(red_poll, blue_poll)._binop(lambda r, b: red_share*r + (1-red_share)*b)
 
 
 def linear_control(x: Var, f: Callable[[float], float], b: float) -> Joint:
-    pair = shared(x)
-    return pair.op(f, lambda a: b*a - b*expect(x))
+    return control_variate(x, f, lambda a: a, expect(x), b)
 
 
 def quadratic_control(x: Var, f: Callable[[float], float], a: float, b: float) -> Joint:
     h = lambda z: a*z*z + b*z
     center = expect(x.op(h))
-    return shared(x).op(f, lambda z: h(z) - center)
+    return control_variate(x, f, h, center)
 
 
 def marginal_control(j: Joint) -> Joint:
@@ -219,11 +298,10 @@ def ab_test(population: Var, treatment: Callable[[float], float],
             control: Callable[[float], float], initial: Callable[[float], float],
             b: float, steps: int) -> Var:
     center = expect(population.op(initial))
-    def adjusted(outcome: Callable[[float], float]) -> Var:
-        pair = shared(population).op(outcome, lambda person: b*(initial(person)-center))
-        return pair.sub()
-    treated = monte_carlo(adjusted(treatment), steps)
-    untreated = monte_carlo(adjusted(control), steps)
+    treated_pair = control_variate(population, treatment, initial, center, b)
+    untreated_pair = control_variate(population, control, initial, center, b)
+    treated = monte_carlo_with_control(treated_pair, steps)
+    untreated = monte_carlo_with_control(untreated_pair, steps)
     return indep(treated, untreated).sub()
 
 
@@ -231,6 +309,21 @@ def fit_cuped(initial: np.ndarray, outcome: np.ndarray) -> float:
     z = initial - initial.mean()
     y = outcome - outcome.mean()
     return float(np.linalg.lstsq(z[:, None], y, rcond=None)[0][0])
+
+
+def cuped(population: Var, outcome: Callable[[float], float],
+          initial: Callable[[float], float], known_mean: float, steps: int) -> Var:
+    """Full sampling distribution with leave-one-out fits; steps >= 2."""
+    def estimate(samples):
+        z = np.array([initial(person) for person in samples])
+        y = np.array([outcome(person) for person in samples])
+        adjusted = []
+        for i in range(len(samples)):
+            others = np.arange(len(samples)) != i
+            b = fit_cuped(z[others], y[others])
+            adjusted.append(y[i] - b*(z[i] - known_mean))
+        return sum(adjusted)/len(adjusted)
+    return iid_statistic(population, steps, estimate, symmetric=True)
 
 
 def fit_baseline(rewards: np.ndarray) -> float:
@@ -242,21 +335,36 @@ def estimated_baseline(x: Var, baseline: float) -> Joint:
     return shared(x).op(lambda r: r*score(r, p), lambda r: baseline*score(r, p))
 
 
-def kl_estimate(x: Var, p: Callable[[float], float], q: Callable[[float], float]) -> Var:
-    return x.op(lambda a: k1(q(a) / p(a)))
+def kl(p: Var, q: Var) -> float:
+    """Compute D_KL(p || q) by summing over the finite support of p."""
+    total = 0.0
+    for value in np.unique(p.values):
+        probability = p.prob(value)
+        if probability == 0:
+            continue
+        reference = q.prob(value)
+        if reference == 0:
+            return float("inf")
+        total += probability * np.log(probability / reference)
+    return float(total)
 
 
-def k1(r: float) -> float:
-    return -np.log(r)
+def k1(p: Var, q: Var) -> Var:
+    """One-sample KL estimate under p."""
+    return p.op(lambda a: p.log_prob(a) - q.log_prob(a))
 
 
-def k3(r: float) -> float:
-    return r - 1 - np.log(r)
+def k2(p: Var, q: Var) -> Var:
+    """Squared-log approximation under p."""
+    return p.op(lambda a: 0.5 * (p.log_prob(a) - q.log_prob(a))**2)
 
 
-def kl_k3(x: Var, p: Callable[[float], float], q: Callable[[float], float]) -> Joint:
-    ratios = x.op(lambda a: q(a) / p(a))
-    return shared(ratios).op(lambda r: -np.log(r), lambda r: 1-r)
+def k3(p: Var, q: Var) -> Var:
+    """KL estimate with a zero-mean control; p and q share positive support."""
+    pair = control_variate(
+        p, lambda a: p.log_prob(a) - q.log_prob(a),
+        lambda a: 1 - q.prob(a) / p.prob(a), known_mean=0)
+    return pair.sub()
 
 
 def topk(x: Var, f: Callable[[float], float], k: int) -> Var:
@@ -269,8 +377,10 @@ def topk(x: Var, f: Callable[[float], float], k: int) -> Var:
     return x.op(lambda a: exact + (0 if a in top else f(a)))
 
 
-def kl_topk(x: Var, p: Callable[[float], float], q: Callable[[float], float], k: int) -> Var:
-    return topk(x, lambda a: np.log(p(a)/q(a)), k)
+def kl_topk(p: Var, q: Var, k: int) -> Var:
+    if not np.isfinite(kl(p, q)):
+        raise ValueError("q must assign positive probability wherever p does")
+    return topk(p, lambda a: np.log(p.prob(a)/q.prob(a)) if p.prob(a) else 0.0, k)
 
 
 def group_rewards(model: Var, reward_a: Callable[[float], float], reward_b: Callable[[float], float]) -> Joint:

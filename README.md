@@ -59,13 +59,20 @@ coalesced, so JIT/autodiff workloads must fit the joint-table budget.
 To preview the illustrated HTML while editing the Python notebook:
 
 ```bash
-python3 preview.py
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python preview.py
 ```
 
 Open `http://127.0.0.1:8765`. Edits to `puzzle.py` or its Python helpers
 rebuild the page and refresh the browser automatically. Keep this command
-running while we rearrange the notebook together. For a one-time export, run
-`python3 build_html.py`; it writes `build/index.html`.
+running while we rearrange the notebook together. If you open `build/index.html`
+directly, run `.venv/bin/python preview.py --watch-only` to rebuild on each save;
+reload that file tab to see changes. For a one-time export, run
+`.venv/bin/python build_html.py`; it writes `build/index.html`. Add `--profile`
+to see the slowest notebook cells.
+The HTML build uses Plotly. Matplotlib is only needed for the older static plot
+functions and their tests; install it with `.venv/bin/python -m pip install -e '.[static-plots]'` if needed.
 
 `distribution` is a small Lea-style library for exact enumeration of finite random
 variables, built from eager JAX arrays. It supports nonlinear transformations,

@@ -7,7 +7,7 @@ from math import factorial, prod
 import numpy as np
 import jax.numpy as jnp
 
-from viz import histogram, variance_3d, gradient_distribution
+from viz import density, histogram, variance_3d, gradient_distribution
 from dist_types import Var, Joint
 
 
@@ -22,6 +22,13 @@ def _table(rv):
 
 def f(x):
     return jnp.array([9., 10., 13., 15., 20., 26.])[jnp.asarray(x, dtype=int)-1]
+
+
+def polling_response(person: float) -> float:
+    """Hidden toy responses: ten high-scoring and twenty low-scoring residents."""
+    responses = (4, 5, 5, 5, 6, 6, 6, 6, 6, 6,
+                 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 4)
+    return float(responses[int(person)])
 
 
 def linear_f(x):
@@ -178,7 +185,8 @@ TITLES = {
 }
 
 
-def check(name, rv, plot=True, without=None, verbose=False, variance_diagram=False):
+def check(name, rv, plot=True, without=None, verbose=False,
+          variance_diagram=False, density_view=False):
     values, mass, target = _reference(name)
     # Check the target expectation independently of the estimator's PMF.
     # For dice-construction exercises, use the reference distribution's mean.
@@ -204,5 +212,7 @@ def check(name, rv, plot=True, without=None, verbose=False, variance_diagram=Fal
             variance_3d(rv)
         elif isinstance(rv, Joint):
             gradient_distribution(rv, TITLES[name], target, without=without)
+        elif density_view:
+            density(rv, without=without)
         else:
             histogram(rv, TITLES[name], target=target, without=without)

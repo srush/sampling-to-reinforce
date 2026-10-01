@@ -32,6 +32,13 @@ class Var:
         object.__setattr__(self, "values", values)
         object.__setattr__(self, "probs", _probabilities(probs, values.shape))
 
+    def prob(self, value: float) -> float:
+        """Probability of a value, including any repeated entries in the support."""
+        return float(self.probs[self.values == value].sum())
+
+    def log_prob(self, value: float) -> float:
+        return float(np.log(self.prob(value)))
+
 
 @dataclass(frozen=True, eq=False, slots=True, init=False)
 class Joint:

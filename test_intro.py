@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 from dist_types import Var, Joint
-from intro_answers import expect, shared, indep, op, binop, op_joint, add, mul, marginal, transpose, covar
+from intro_answers import expect, uniform, shared, indep, op, binop, op_joint, add, mul, marginal, transpose, covar
 
 
 class IntroTests(unittest.TestCase):
@@ -18,6 +18,18 @@ class IntroTests(unittest.TestCase):
         self.assertEqual(expect(self.x), 0)
         self.assertEqual(expect(self.y), 3.1)
         self.assertDist(Var([7], [1.0]), [7], [1])
+        repeated = Var([2, 2, 7], [.2, .3, .5])
+        self.assertAlmostEqual(repeated.prob(2), .5)
+        self.assertEqual(repeated.prob(3), 0)
+        self.assertAlmostEqual(repeated.log_prob(2), np.log(.5))
+
+    def test_uniform_half_open_interval(self):
+        self.assertDist(uniform(1, 4), [1, 2, 3], [1/3]*3)
+        self.assertDist(uniform(-2, -1), [-2], [1])
+        with self.assertRaises(ValueError):
+            uniform(3, 3)
+        with self.assertRaises(TypeError):
+            uniform(0.5, 3)
 
     def test_four_sides(self):
         from intro_answers import four_sides
@@ -42,14 +54,14 @@ class IntroTests(unittest.TestCase):
         check("six", die, plot=False)
 
     def test_monte_carlo(self):
-        from intro_answers import six_sides, single_sample, ten_samples, linear_control
+        from intro_answers import six_sides, monte_carlo, linear_control
         from checks import check, f, linear_f
         die = six_sides(Var([0, 1], [.5, .5]))
-        one = single_sample(die, f)
-        ten = ten_samples(die, f)
+        one = monte_carlo(die.op(f), 1)
+        ten = monte_carlo(die.op(f), 10)
         pair = linear_control(die, linear_f, 3)
         self.assertIsInstance(pair, Joint)
-        from intro_answers import monte_carlo, sub
+        from intro_answers import sub
         control = monte_carlo(sub(pair), 5)
         self.assertAlmostEqual(covar(pair), 25.25)
         self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
@@ -60,7 +72,7 @@ class IntroTests(unittest.TestCase):
         plain = op(linear_f, die)
         self.assertLess(covar(shared(control)), covar(shared(plain))/5)
         self.assertAlmostEqual(expect(control), expect(plain))
-        self.assertDist(ten_samples(Var([2], [1.0]), lambda a: 3*a), [6], [1])
+        self.assertDist(monte_carlo(Var([2], [1.0]).op(lambda a: 3*a), 10), [6], [1])
 
     def test_monte_carlo_helper(self):
         from intro_answers import monte_carlo
@@ -93,11 +105,12 @@ class IntroTests(unittest.TestCase):
         from checks import check
         die = a.six_sides(Var([0, 1], [.5, .5]))
         p, q = np.arange(1., 7.)/21, np.ones(6)/6
+        p_dist, q_dist = Var(np.arange(6), p), Var(np.arange(6), q)
         theta = np.array([np.log(3.), 0.])
         loo = shared(a.sub(a.reinforce_loo(theta))).op(lambda g: -g, lambda g: g)
         examples = {"sum": a.two_dice(die), "weighted": a.weighted_die([1, 2, 3, 4, 5, 6]),
-                    "kl": a.monte_carlo(a.kl_estimate(Var(np.arange(6), p), lambda z: p[int(z)], lambda z: q[int(z)]), 5),
-                    "k3": a.monte_carlo(a.sub(a.kl_k3(Var(np.arange(6), p), lambda z: p[int(z)], lambda z: q[int(z)])), 5),
+                    "kl": a.monte_carlo(a.k1(p_dist, q_dist), 5),
+                    "k3": a.monte_carlo(a.k3(p_dist, q_dist), 5),
                     "markov": a.markov_chain(Var([0, 1], [1., 0.]), Joint([0, 1], [0, 1], [[3/8, 1/8], [1/8, 3/8]])), "unigram": a.sub(a.markov_unigram(Var([0, 1], [1., 0.]), Joint([0, 1], [0, 1], [[3/8, 1/8], [1/8, 3/8]]))),
                     "reinforce": a.reinforce(theta), "loo": loo}
         for name, result in examples.items():
@@ -133,8 +146,11 @@ class IntroTests(unittest.TestCase):
         from checks import linear_f, quadratic_f
         x = a.six_sides(Var([0, 1], [.5, .5]))
         p, q = np.arange(1., 7.)/21, np.ones(6)/6
+        p_dist, q_dist = Var(np.arange(6), p), Var(np.arange(6), q)
         for pair in (a.linear_control(x, linear_f, 3), a.quadratic_control(x, quadratic_f, 1, 2),
-                     a.kl_k3(Var(np.arange(6), p), lambda z: p[int(z)], lambda z: q[int(z)]),
+                     a.control_variate(p_dist,
+                         lambda z: p_dist.log_prob(z)-q_dist.log_prob(z),
+                         lambda z: 1-q_dist.prob(z)/p_dist.prob(z), 0),
                      a.markov_unigram(Var([0, 1], [1., 0.]), Joint([0, 1], [0, 1], [[3/8, 1/8], [1/8, 3/8]])), a.reinforce_loo(np.array([np.log(3.), 0.]))):
             self.assertIsInstance(pair, Joint)
             estimate, control = marginal(pair), marginal(transpose(pair))
@@ -157,17 +173,25 @@ class IntroTests(unittest.TestCase):
         self.assertAlmostEqual(expect(result), expect(one))
         self.assertAlmostEqual(variance(result), variance(one)/5)
 
-    def test_kl_callable_interface(self):
+    def test_kl_var_interface(self):
         import intro_answers as a
-        x = Var([2, 7], [.3, .7])
-        p = lambda z: .3 if z == 2 else .7
-        q = lambda z: .6 if z == 2 else .4
-        estimate = a.kl_estimate(x, p, q)
+        p = Var([2, 7], [.3, .7])
+        q = Var([7, 2], [.4, .6])
+        estimate = a.k1(p, q)
         target = .3*np.log(.3/.6) + .7*np.log(.7/.4)
+        self.assertAlmostEqual(a.kl(p, q), target)
+        self.assertEqual(a.kl(p, p), 0)
+        self.assertEqual(a.kl(p, Var([2, 9], [.6, .4])), float("inf"))
+        self.assertEqual(a.kl(Var([2, 7], [1, 0]), Var([2], [1])), 0)
+        self.assertEqual(a.kl(Var([2, 2], [.3, .7]), Var([2], [1])), 0)
         self.assertAlmostEqual(expect(estimate), target)
-        pair = a.kl_k3(x, p, q)
-        self.assertAlmostEqual(expect(marginal(transpose(pair))), 0)
-        self.assertAlmostEqual(expect(a.sub(pair)), target)
+        corrected = a.k3(p, q)
+        self.assertAlmostEqual(expect(corrected), target)
+        self.assertTrue(np.all(corrected.values[corrected.probs > 0] >= -1e-12))
+        squared = a.k2(p, q)
+        self.assertAlmostEqual(expect(squared),
+            .5*(.3*np.log(.3/.6)**2 + .7*np.log(.7/.4)**2))
+        self.assertFalse(np.isclose(expect(squared), target))
         self.assertAlmostEqual(a.variance(a.monte_carlo(estimate, 5)), a.variance(estimate)/5)
 
     def test_markov_joint_transition(self):
@@ -208,24 +232,24 @@ class IntroTests(unittest.TestCase):
     def test_topk_kl(self):
         import intro_answers as a
         from checks import check
-        x = a.weighted_die([1, 2, 3, 4, 5, 6])
-        p, q = lambda z: z/21, lambda z: 1/6
-        baseline = a.kl_estimate(x, p, q)
+        p = a.weighted_die([1, 2, 3, 4, 5, 6])
+        q = uniform(1, 7)
+        baseline = a.k1(p, q)
         target = expect(baseline)
         for k in range(7):
-            estimate = a.kl_topk(x, p, q, k)
+            estimate = a.kl_topk(p, q, k)
             self.assertAlmostEqual(expect(estimate), target)
-        zero = a.kl_topk(x, p, q, 0)
+        zero = a.kl_topk(p, q, 0)
         self.assertDist(zero, baseline.values, baseline.probs)
-        self.assertAlmostEqual(a.variance(a.kl_topk(x, p, q, 6)), 0)
-        check("topk", a.monte_carlo(a.kl_topk(x, p, q, 3), 5), plot=False)
-        self.assertLess(a.variance(a.sub(a.kl_k3(x, p, q))), a.variance(baseline))
+        self.assertAlmostEqual(a.variance(a.kl_topk(p, q, 6)), 0)
+        check("topk", a.monte_carlo(a.kl_topk(p, q, 3), 5), plot=False)
+        self.assertLess(a.variance(a.k3(p, q)), a.variance(baseline))
         for k in (-1, 7):
             with self.assertRaises(ValueError):
-                a.kl_topk(x, p, q, k)
-        x = Var([2, 7], [.3, .7])
-        p, q = lambda z: .3 if z == 2 else .7, lambda z: .6 if z == 2 else .4
-        result = a.kl_topk(x, p, q, 1)
+                a.kl_topk(p, q, k)
+        p = Var([2, 7], [.3, .7])
+        q = Var([2, 7], [.6, .4])
+        result = a.kl_topk(p, q, 1)
         exact = .7*np.log(.7/.4)
         self.assertDist(result, [exact+np.log(.3/.6), exact], [.3, .7])
 
@@ -303,6 +327,50 @@ class IntroTests(unittest.TestCase):
         pair = a.estimated_baseline(reward, baseline)
         self.assertAlmostEqual(a.variance(pair.sub()), .046875)
         self.assertLess(a.variance(pair.sub()), a.variance(marginal(pair)))
+
+    def test_cuped_leave_one_out(self):
+        import intro_answers as a
+        population=uniform(0,4)
+        initial=lambda person: person//2
+        control=lambda person: person
+        treatment=lambda person: person+1
+        with patch('numpy.random.default_rng',side_effect=AssertionError('No randomness')):
+            with patch.object(a,'expect',side_effect=AssertionError('No population moments in fit')):
+                treated=a.cuped(population,treatment,initial,.5,5)
+                untreated=a.cuped(population,control,initial,.5,5)
+        result=indep(treated,untreated).sub()
+        self.assertAlmostEqual(expect(result),1)
+        raw=a.ab_sampling(population,treatment,control,5)
+        self.assertLess(a.variance(result),a.variance(raw))
+        # Retaining fitting uncertainty differs from using the ideal fixed b=2.
+        fixed=a.ab_test(population,treatment,control,initial,2,5)
+        self.assertGreater(a.variance(result),a.variance(fixed))
+
+    def test_cuped_fits_only_other_samples(self):
+        import intro_answers as a
+        samples=(0.,1.,2.,3.)
+        def evaluate(draw,steps,statistic,**kwargs):
+            return Var([statistic(samples)],[1])
+        with patch.object(a,'iid_statistic',side_effect=evaluate):
+            with patch.object(a,'fit_cuped',wraps=a.fit_cuped) as fit:
+                a.cuped(uniform(0,4),lambda person: person,lambda person: person//2,.5,4)
+        self.assertEqual(fit.call_count,4)
+        for i,call in enumerate(fit.call_args_list):
+            others=[person for j,person in enumerate(samples) if i!=j]
+            np.testing.assert_array_equal(call.args[0],[person//2 for person in others])
+            np.testing.assert_array_equal(call.args[1],others)
+
+    def test_cuped_unbiased_with_random_and_degenerate_fits(self):
+        import intro_answers as a
+        population=Var([0,1,2],[.1,.3,.6])
+        outcome=lambda person: person**2+person
+        for initial in (lambda person: person,lambda person: 1):
+            known_mean=expect(population.op(initial))
+            for steps in (2,3,4):
+                result=a.cuped(population,outcome,initial,known_mean,steps)
+                self.assertAlmostEqual(expect(result),expect(population.op(outcome)))
+                self.assertAlmostEqual(sum(result.probs),1)
+                self.assertTrue(np.isfinite(result.values).all())
 
     def test_group_rewards(self):
         import intro_answers as a
@@ -391,9 +459,16 @@ class IntroTests(unittest.TestCase):
             self.assertAlmostEqual(frame["mc_variance"], total / 5)
             self.assertAlmostEqual(frame["mean"], frames[0]["mean"])
             np.testing.assert_allclose(frame["b"], frames[0]["b"])
-            for values, masses in frame["grouped"]:
+            for values, masses in frame["distributions"]:
                 self.assertAlmostEqual(masses.sum(), 1)
         self.assertGreater(frames[-1]["terms"][-1], frames[0]["terms"][-1])
+
+    def test_weighted_density(self):
+        from plotly_viz import _weighted_density
+        grid = np.linspace(-5, 6, 1000)
+        density = _weighted_density(np.array([0., 1.]), np.array([.25, .75]), grid, .4)
+        self.assertAlmostEqual(np.trapezoid(density, grid), 1, places=5)
+        self.assertGreater(density[np.argmin(abs(grid-1))], density[np.argmin(abs(grid))])
 
     def test_interactive_variance(self):
         from plotly_viz import variance_widget
@@ -402,6 +477,32 @@ class IntroTests(unittest.TestCase):
         self.assertIn("plotly_hover", html)
         self.assertNotIn("Variance contribution", html)
         self.assertIn("Plotly.restyle", html)
+
+    def test_covariance_interpolation_slider(self):
+        from plotly_viz import covariance_interpolation_slider, _covariance_figure
+        from intro_answers import variance
+        independent, paired = indep(self.x, self.x), shared(self.x)
+        for strength in (0, .25, .5, 1):
+            mixed = Joint(self.x.values, self.x.values,
+                (1-strength)*independent.probs + strength*paired.probs)
+            self.assertAlmostEqual(covar(mixed), strength*variance(self.x))
+        first, _, _ = _covariance_figure(independent, keep_zeros=True)
+        last, _, _ = _covariance_figure(paired, keep_zeros=True)
+        self.assertEqual(len(first.data), len(last.data))
+        html = covariance_interpolation_slider(self.x).data
+        self.assertIn("Cov(X,Y) = 0.000", html)
+        self.assertIn("Cov(X,Y) = 1.000", html)
+
+    def test_sum_variance_slider_uses_scalar_dice_sums(self):
+        from intro_answers import variance
+        from plotly_viz import sum_variance_slider
+        die = uniform(1, 7)
+        self.assertAlmostEqual(variance(indep(die, die).add()), 35/6)
+        self.assertAlmostEqual(variance(shared(die).add()), 35/3)
+        html = sum_variance_slider(die).data
+        self.assertIn("Var(X + Y) = 2.917 + 2.917 + 2 × 0.000 = 5.833", html)
+        self.assertIn("11.667", html)
+        self.assertIn('"title":{"text":"X + Y"}', html)
 
     def test_scaled_variance_slider(self):
         from plotly_viz import scaled_variance_slider, _covariance_figure
@@ -415,14 +516,13 @@ class IntroTests(unittest.TestCase):
         self.assertNotIn('"label":"0"',html)
         self.assertIn('Var(bX) = 83.00',html)
         self.assertIn('Var(bX) = 20.75',html)
-        bounds=(1,8,3)
-        f1,_,_=_covariance_figure(shared(x),True,bounds=bounds,height_scale=1)
-        f4,_,_=_covariance_figure(shared(x),True,bounds=bounds,height_scale=16)
+        bounds=(1,32,float(x.probs.max()))
+        f1,_,_=_covariance_figure(shared(x),True,bounds=bounds)
+        f4,_,_=_covariance_figure(shared(x.op(lambda a: 4*a)),True,bounds=bounds)
         dots1=[t for t in f1.data if t.mode=="markers"]
         dots4=[t for t in f4.data if t.mode=="markers"]
-        for a,b in zip(dots1,dots4):
-            np.testing.assert_allclose(a.x,b.x)
-            np.testing.assert_allclose(np.array(a.y)*16,b.y)
+        self.assertFalse(np.allclose(dots1[0].x,dots4[0].x))
+        self.assertIn('32',html)
 
     def test_square_and_triangle_sum(self):
         from intro_answers import square, triangular, two_triangles, variance
@@ -444,7 +544,9 @@ class IntroTests(unittest.TestCase):
         np.testing.assert_allclose(fig.data[-1].y,self.x.probs)
         np.testing.assert_allclose(fig.layout.xaxis.tickvals,self.x.values)
         dense=Var(np.arange(12),np.ones(12)/12)
-        np.testing.assert_allclose(_histogram_figure(dense).layout.xaxis.tickvals,dense.values)
+        ticks=_histogram_figure(dense).layout.xaxis.tickvals
+        self.assertEqual(len(ticks),8)
+        np.testing.assert_allclose([ticks[0],ticks[-1]],[0,11])
         joint,boxes,mapping=_covariance_figure(indep(self.x,self.y),boxes=False)
         self.assertTrue(all(joint.data[i].visible is False for i in boxes))
         self.assertEqual(len(joint.layout.shapes),1)
@@ -468,6 +570,149 @@ class IntroTests(unittest.TestCase):
         self.assertIn('"label":"20"',html)
         self.assertIn('Coin flips:',html)
         self.assertIn('"fixedrange":true',html)
+
+    def test_polling(self):
+        from checks import polling_response
+        from intro_answers import monte_carlo, variance, control_variate, monte_carlo_with_control
+        population=Var(np.arange(30),np.ones(30)/30)
+        responses=population.op(polling_response)
+        np.testing.assert_allclose(responses.probs,np.array([12,5,2,2,3,6])/30)
+        self.assertAlmostEqual(expect(responses),87/30)
+        estimates=monte_carlo(responses,50)
+        self.assertAlmostEqual(expect(estimates),expect(responses))
+        self.assertAlmostEqual(variance(estimates),variance(responses)/50)
+        guess=lambda person: 6 if person<10 else 2
+        known_mean=expect(population.op(guess))
+        self.assertAlmostEqual(known_mean,10/3)
+        pair=control_variate(population,polling_response,guess,known_mean)
+        control=marginal(transpose(pair))
+        corrected=monte_carlo_with_control(pair,50)
+        self.assertAlmostEqual(expect(control),0)
+        self.assertAlmostEqual(expect(corrected),expect(responses))
+        self.assertLess(variance(corrected),variance(estimates))
+
+    def test_control_variate_helpers(self):
+        from intro_answers import control_variate, monte_carlo_with_control, variance
+        x=Var([0,1],[.25,.75])
+        pair=control_variate(x,lambda a: 2*a+1,lambda a: a,.75,b=2)
+        self.assertIsInstance(pair,Joint)
+        self.assertAlmostEqual(expect(marginal(transpose(pair))),0)
+        self.assertAlmostEqual(covar(pair),.75)
+        result=monte_carlo_with_control(pair,5)
+        self.assertAlmostEqual(expect(result),2.5)
+        self.assertAlmostEqual(variance(result),0)
+        unadjusted=monte_carlo_with_control(control_variate(x,lambda a: 2*a+1,lambda a: a,.75,b=0),5)
+        self.assertAlmostEqual(variance(unadjusted),.75/5)
+
+    def test_stratified_polling(self):
+        from intro_answers import stratify, variance
+        red=Var([5,6],[.5,.5])
+        blue=Var([1,2,3],[.5,.25,.25])
+        with patch('checks.polling_response',side_effect=AssertionError('No population access')):
+            result=stratify(red,blue,1/3,2,4)
+        self.assertIsInstance(result,Var)
+        self.assertAlmostEqual(expect(result),3)
+        self.assertAlmostEqual(variance(result),variance(red)/18+variance(blue)/9)
+
+    def test_iid_statistic(self):
+        from intro_answers import iid_statistic, monte_carlo, variance
+        draw=Var([1,2,3,4],[.1,.2,.3,.4])
+        seen=[]
+        def statistic(samples):
+            self.assertIsInstance(samples,tuple)
+            self.assertEqual(len(samples),3)
+            seen.append(samples)
+            return sum(samples)/3
+        result=iid_statistic(draw,3,statistic)
+        reference=monte_carlo(draw,3)
+        self.assertEqual(len(seen),4**3)
+        self.assertDist(result,reference.values,reference.probs)
+        self.assertAlmostEqual(variance(result),variance(reference))
+
+    def test_iid_statistic_symmetry(self):
+        from intro_answers import iid_statistic
+        draw=Var([0,1,2],[.2,.5,.3])
+        statistic=lambda samples: sum(samples)**2
+        ordered=iid_statistic(draw,4,statistic)
+        symmetric=iid_statistic(draw,4,statistic,symmetric=True)
+        self.assertDist(symmetric,ordered.values,ordered.probs)
+        # Default mode preserves order for statistics that depend on it.
+        first=iid_statistic(draw,3,lambda samples: samples[0])
+        self.assertDist(first,draw.values,draw.probs)
+
+    def test_iid_statistic_uses_scalar_binop(self):
+        import intro_answers as a
+        original=a.binop
+        def scalar_binop(f,j):
+            self.assertEqual(j._x.dtype.kind,'f')
+            self.assertEqual(j._y.dtype.kind,'f')
+            result=original(f,j)
+            self.assertEqual(result.values.dtype.kind,'f')
+            return result
+        with patch.object(a,'binop',side_effect=scalar_binop) as combine:
+            result=a.iid_statistic(Var([0,1],[.75,.25]),3,sum)
+        self.assertEqual(combine.call_count,3)
+        self.assertDist(result,[0,1,2,3],[.75**3,3*.75**2*.25,3*.75*.25**2,.25**3])
+        leading_zeros=a.iid_statistic(Var([2,7],[.6,.4]),3,
+                                      lambda samples: 100*samples[0]+10*samples[1]+samples[2])
+        self.assertAlmostEqual(leading_zeros.prob(227),.6*.6*.4)
+        def positive_only(samples):
+            self.assertEqual(samples,(7.,7.,7.))
+            return sum(samples)
+        self.assertDist(a.iid_statistic(Var([2,7],[0,1]),3,positive_only),[21],[1])
+        with self.assertRaises(OverflowError):
+            a.iid_statistic(Var([0,1],[.5,.5]),54,sum)
+
+    def test_post_stratification_held_out_fits(self):
+        from intro_answers import post_stratify
+        # With two draws, each fit sees exactly one other response.
+        # BB -> 0; RR -> .5; BR/RB -> (.5 + 2)/2 = 1.25.
+        draw=Var([0,1],[.75,.25])
+        with patch('numpy.random.default_rng',side_effect=AssertionError('No randomness')):
+            with patch('intro_answers.expect',side_effect=AssertionError('No population moments')):
+                result=post_stratify(draw,2,.25,lambda person: person,lambda person: 2*person)
+        self.assertDist(result,[0,.5,1.25],[.75**2,.25**2,2*.75*.25])
+        self.assertAlmostEqual(expect(result),.5)
+
+    def test_post_stratification_missing_groups(self):
+        from intro_answers import post_stratify
+        draw=Var([0,1,2,3],[.3,.4,.1,.2])
+        group=lambda person: person>=2
+        response=lambda person: [1,2,1,5][int(person)]
+        target=expect(draw.op(response))
+        for steps in (1,2,3,4):
+            for fallback in (0,3,-2):
+                with self.subTest(steps=steps,fallback=fallback):
+                    result=post_stratify(draw,steps,.3,group,response,fallback)
+                    self.assertAlmostEqual(sum(result.probs),1)
+                    self.assertAlmostEqual(expect(result),target)
+                    self.assertTrue(np.all(np.isfinite(result.values)))
+        # No training observations at all: the common fallback cancels.
+        self.assertDist(post_stratify(draw,1,.3,group,response),[1,2,5],[.4,.4,.2])
+
+    def test_post_stratification_polling(self):
+        from intro_answers import post_stratify, variance
+        from intro_answers import monte_carlo
+        from checks import polling_response
+        draw=uniform(0,30)
+        raw=monte_carlo(draw.op(polling_response),6)
+        with patch('checks.polling_response',side_effect=AssertionError('No population access')):
+            with patch('numpy.random.default_rng',side_effect=AssertionError('No randomness')):
+                result=post_stratify(draw,6,1/3,lambda person: person<10,polling_response)
+        self.assertIsInstance(result,Var)
+        self.assertAlmostEqual(sum(result.probs),1)
+        self.assertAlmostEqual(expect(result),2.9)
+        self.assertLess(variance(result),variance(raw))
+        self.assertAlmostEqual(variance(result),.525,places=3)
+
+    def test_dense_plot_labels(self):
+        from plotly_viz import _covariance_figure, _label_indices
+        np.testing.assert_array_equal(_label_indices(8),np.arange(8))
+        self.assertEqual(len(_label_indices(9)),8)
+        fig,_,_=_covariance_figure(shared(Var(np.arange(12),np.ones(12)/12)),True)
+        labels=[t.text[0] for t in fig.data if t.mode=="markers+text"]
+        self.assertEqual(sum(bool(t) for t in labels),8)
+        self.assertEqual(len(labels),12)
 
     def test_plot_rounding(self):
         from viz import _number, covariance_3d

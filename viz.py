@@ -1,9 +1,14 @@
 """Notebook-friendly probability histograms for scalar distribution.RV objects."""
 
 import numpy as np
-import matplotlib.pyplot as plt
 import distribution as d
 from dist_types import Var, Joint
+
+
+def _pyplot():
+    """Load Matplotlib only for the legacy static-figure functions."""
+    import matplotlib.pyplot as plt
+    return plt
 
 
 def _number(value, signed=False):
@@ -35,7 +40,7 @@ def _plot_joint(j):
 
 def _scalar_mass(rv):
     """Collect scalar probability masses, merging floating-point duplicates."""
-    values, mass = (np.asarray(a) for a in rv.table())
+    values, mass = (rv.values, rv.probs) if isinstance(rv, Var) else (np.asarray(a) for a in rv.table())
     if values.ndim != 1 or not np.isfinite(values).all():
         raise ValueError("Expected a finite scalar distribution")
     if not np.isfinite(mass).all() or np.any(mass < 0) or mass.sum() <= 0:
@@ -110,7 +115,7 @@ def _minimal_histogram_axes(ax, values):
 
 
 def _geometry_axes():
-    fig, ax = plt.subplots(figsize=(7, 3.5), layout="constrained")
+    fig, ax = _pyplot().subplots(figsize=(7, 3.5), layout="constrained")
     fig.set_facecolor("#faf9f5")
     ax.set_facecolor("#faf9f5")
     ax.set_aspect("equal")
@@ -136,7 +141,7 @@ def joint_top_view(j: Joint, show=True):
     """View joint mass from above; faint crosses mark zero-mass grid points."""
     x, y = np.meshgrid(j._x, j._y, indexing="ij")
     keep = j.probs > 0
-    fig, ax = plt.subplots(figsize=(6, 6), layout="constrained")
+    fig, ax = _pyplot().subplots(figsize=(6, 6), layout="constrained")
     fig.set_facecolor("#faf9f5")
     ax.set_facecolor("#faf9f5")
     ax.scatter(x[~keep], y[~keep], marker="x", s=20, color="#d3d5d4", linewidths=1)
@@ -150,7 +155,7 @@ def joint_top_view(j: Joint, show=True):
     ax.tick_params(colors="#53616a", labelsize=9)
     _format_ticks(fig)
     if show:
-        plt.show()
+        _pyplot().show()
     return fig
 
 
@@ -193,7 +198,7 @@ def covariance_3d(pair, variance=False, show=True, probability_limit=None,
     center = mass @ support
     deviations = support-center
     covariance = float(mass @ (deviations[:, 0]*deviations[:, 1]))
-    fig = plt.figure(figsize=(8, 5.8), layout="constrained")
+    fig = _pyplot().figure(figsize=(8, 5.8), layout="constrained")
     fig.set_facecolor("#faf9f5")
     ax = fig.add_subplot(111, projection="3d", computed_zorder=False)
     ax.set_facecolor("#faf9f5")
@@ -268,7 +273,7 @@ def covariance_3d(pair, variance=False, show=True, probability_limit=None,
     ax.tick_params(labelsize=8)
     _format_ticks(fig)
     if show:
-        plt.show()
+        _pyplot().show()
     return fig
 
 
@@ -302,7 +307,7 @@ def variance_reduction_3d(j: Joint, show=True, sign=-1, parts_only=False):
     contributions = np.array([p*da**2, p*db**2, 2*sign*p*da*db, p*combined**2])
     totals = contributions.sum(axis=1)
     np.testing.assert_allclose(totals[:3].sum(), totals[3], atol=1e-10)
-    fig = plt.figure(figsize=(10, 3.5) if parts_only else (10, 8), layout="constrained")
+    fig = _pyplot().figure(figsize=(10, 3.5) if parts_only else (10, 8), layout="constrained")
     fig.set_facecolor("#faf9f5")
     terms = [(da, da, p, "A variance", "#4c8194"),
              (db, db, p, "B variance", "#4c8194"),
@@ -347,7 +352,7 @@ def variance_reduction_3d(j: Joint, show=True, sign=-1, parts_only=False):
             ax.set_title(f"{title} {value}", color=color, fontsize=11)
     _format_ticks(fig)
     if show:
-        plt.show()
+        _pyplot().show()
     return fig
 
 
@@ -378,7 +383,7 @@ def coin_variance_animation(max_flips=20):
         buffer.seek(0)
         with Image.open(buffer) as frame:
             frames.append(frame.convert("RGB"))
-        plt.close(fig)
+        _pyplot().close(fig)
     durations = [450]*len(frames)
     durations[0], durations[-1] = 1100, 1800
     output = BytesIO()
@@ -414,7 +419,7 @@ def variance_vector(rv):
     ax.set(xlim=(-1.5*scale, 1.5*scale), ylim=(-.25*scale, 1.3*scale))
     ax.text(0, 1.1*scale, f"variance {_number(float(rv.var()))}", ha="center")
     _format_ticks(fig)
-    plt.show()
+    _pyplot().show()
     return fig
 
 
@@ -452,7 +457,7 @@ def covariance_vectors(x, y):
     ax.text(vx[0], -.2*scale, "X", color="#4c8194", ha="center")
     ax.text(vy[0], vy[1]+.12*scale, "Y", color="#c63737", ha="center")
     _format_ticks(fig)
-    plt.show()
+    _pyplot().show()
     return fig
 
 
@@ -480,7 +485,7 @@ def pythagorean_variance(x, y):
     ax.text((a-b)/2, (b+a)/2, f"{_number(average_variance)}", ha="center", va="center", color="#c63737")
     ax.set(xlim=(-b-.4*s, a+b+.4*s), ylim=(-a-.6*s, b+a+.6*s))
     _format_ticks(fig)
-    plt.show()
+    _pyplot().show()
     return fig
 
 
@@ -503,14 +508,32 @@ def histogram(rv, title="Distribution", target=None, without=None, comparison_la
         return control_comparison(rv, without, comparison_labels)
     (support, mass), = _range_masses(_scalar_mass(rv))
     mean = float(rv.mean())
-    fig, ax = plt.subplots(figsize=(7, 2.8), layout="constrained")
+    fig, ax = _pyplot().subplots(figsize=(7, 2.8), layout="constrained")
     fig.set_facecolor("#faf9f5"); ax.set_facecolor("#faf9f5")
     _discrete_dots(ax, support, mass)
     ax.axvline(mean, color="#c63737", linewidth=3)
     _minimal_histogram_axes(ax, support)
     _format_ticks(fig)
-    plt.show()
+    _pyplot().show()
     return fig
+
+
+def histogram_row(*distributions, labels=None):
+    """Display two or more separate histograms in horizontal columns."""
+    from IPython.display import display
+    from plotly_viz import histogram_row_widget
+    widget = histogram_row_widget(*distributions, labels=labels)
+    display(widget)
+    return widget
+
+
+def density(rv, without=None, comparison_labels=None):
+    """Display a smooth density view of exact discrete masses."""
+    from IPython.display import display
+    from plotly_viz import density_widget
+    widget = density_widget(rv, without=without, comparison_labels=comparison_labels)
+    display(widget)
+    return widget
 
 
 def gradient_distribution(rv, title, target, without=None, show=True):
@@ -529,7 +552,7 @@ def gradient_distribution(rv, title, target, without=None, show=True):
     sample = values[np.random.default_rng(7).choice(len(values), p=weights)]
     support, inverse = np.unique(np.round(values, 8), axis=0, return_inverse=True)
     mass = np.bincount(inverse, weights=weights)
-    fig, ax = plt.subplots(figsize=(7, 4.2), layout="constrained")
+    fig, ax = _pyplot().subplots(figsize=(7, 4.2), layout="constrained")
     fig.set_facecolor("#faf9f5"); ax.set_facecolor("#faf9f5")
     if without is not None:
         other, other_mass = (np.asarray(a) for a in without.table())
@@ -550,7 +573,7 @@ def gradient_distribution(rv, title, target, without=None, show=True):
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(colors="#53616a", labelsize=9)
     _format_ticks(fig)
-    plt.show()
+    _pyplot().show()
     return fig
 
 
@@ -568,19 +591,20 @@ def variance_text(ax, variance, without=None, total=False, comparison_labels=Non
                 ha="right", fontsize=9, color="#4c8194")
 
 
-def show_control(pair: Joint, steps: int = 1, decomposition: bool = False, show=True):
-    """Blue: adjusted estimate; white: raw estimate. Report the joint variance terms."""
-    from intro_answers import marginal, transpose, expect, variance, covar, monte_carlo
+def show_control(pair: Joint, steps: int = 1, decomposition: bool = False,
+                 show=True, density_view=False):
+    """Compare raw and adjusted estimates and report joint variance terms."""
+    from intro_answers import marginal, transpose, expect, variance, covar, monte_carlo, monte_carlo_with_control
     a, b = marginal(pair), marginal(transpose(pair))
     np.testing.assert_allclose(expect(b), 0, atol=1e-10)
     var_a, var_b = variance(a)/steps, variance(b)/steps
     cross = 2*covar(pair)/steps
-    adjusted = monte_carlo(pair.sub(), steps)
+    adjusted = monte_carlo_with_control(pair, steps)
     raw = monte_carlo(a, steps)
-    print("White: raw estimate | Blue: estimate minus control")
+    print(("Gray" if density_view else "White") + ": raw estimate | Blue: estimate minus control")
     print(f"Var 1 = {var_a:.6g}; Var 2 = {var_b:.6g}; 2 Cov = {cross:.6g}")
     print(f"Var(adjusted) = {var_a:.6g} + {var_b:.6g} - ({cross:.6g}) = {variance(adjusted):.6g}")
-    fig = histogram(adjusted, without=raw, show=show)
+    fig = density(adjusted, without=raw) if density_view and show else histogram(adjusted, without=raw, show=show)
     if decomposition:
         print("Single sample, left to right: Var 1 + Var 2 - 2 Cov")
         print(f"{variance(a):.6g} + {variance(b):.6g} - ({2*covar(pair):.6g}) = {variance(pair.sub()):.6g}")
@@ -593,12 +617,12 @@ def control_comparison(rv, without, comparison_labels=None):
     (values, mass), (other, other_mass) = _range_masses(
         _scalar_mass(rv), _scalar_mass(without))
     np.testing.assert_allclose(rv.mean(), without.mean(), rtol=2e-6, atol=2e-6)
-    fig, ax = plt.subplots(figsize=(7, 2.8), layout="constrained")
+    fig, ax = _pyplot().subplots(figsize=(7, 2.8), layout="constrained")
     fig.set_facecolor("#faf9f5"); ax.set_facecolor("#faf9f5")
     _discrete_dots(ax, other, other_mass, "#858b90", hollow=True)
     _discrete_dots(ax, values, mass)
     ax.axvline(float(rv.mean()), color="#c63737", linewidth=3)
     _minimal_histogram_axes(ax, np.r_[values, other])
     _format_ticks(fig)
-    plt.show()
+    _pyplot().show()
     return fig

@@ -2,15 +2,16 @@
 
 from contextlib import redirect_stdout
 from html import escape
-from io import StringIO, BytesIO
+from io import StringIO
 from pathlib import Path
-import base64
 import inspect
+import os
 import re
+import sys
+from time import perf_counter
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+os.environ["RL_PUZZLES_EMBED_PLOTLY_JS"] = "0"
+
 import jupytext
 from markdown_it import MarkdownIt
 from pygments import highlight
@@ -20,7 +21,7 @@ import intro_answers
 import IPython.display
 
 
-def build():
+def build(profile=False):
     root = Path(__file__).resolve().parent
     notebook = jupytext.read(root / "puzzle.py")
     formatter = HtmlFormatter()
@@ -31,54 +32,40 @@ def build():
         return ''.join('<div class="math">\\[' + escape(chunk[2:-2].strip()) + '\\]</div>'
                        if chunk.startswith('$$') else markdown.render(chunk) for chunk in chunks)
     namespace = {"__name__": "__main__"}
+    timings = []
     sections, images = [], []
+    section_nav = []
     section_open = False
-    names = ("four_sides", "six_sides", "triangular", "weighted_die", "two_triangles", "single_sample",
-                         "ten_samples", "independent_two_variables", "linear_control", "quadratic_control",
-                         "two_variables", "additive", "kl_estimate", "kl_k3", "kl_topk",
+    names = ("four_sides", "six_sides", "triangular", "weighted_die", "two_triangles", "monte_carlo",
+                         "monte_carlo", "independent_two_variables", "linear_control", "quadratic_control",
+                         "two_variables", "additive", "k1", "k3", "kl_topk",
                          "markov_chain", "markov_unigram", "group_rewards", "reinforce", "reinforce_loo")
     titles = ["Four sides","Six sides","Triangular distribution","Weighted dice from fair coins","Two dice","One sample","Monte Carlo · ten samples","Independent two-variable Monte Carlo","A roughly linear control variate","Five samples, a roughly parabolic function","Five samples, two variables","Five samples, an additive function","k1 KL estimate","k3 KL control variate","Unbiased top-k KL","A two-state Markov chain","A unigram control variate","Additive rewards from one model draw","REINFORCE with a two-dimensional gradient","REINFORCE with leave-one-out"]
     titles[4] = "Two triangles"
     answers = dict(zip(titles, names))
+    # These estimators are defined in the visible notebook cells.
+    answers.pop("k1 KL estimate")
+    answers.pop("k3 KL control variate")
     question_ids = {title: f"puzzle-{i}" for i, title in enumerate(titles, 1)}
+    # Keep later puzzle IDs stable while removing this example from the page.
+    answers.pop("Five samples, an additive function")
+    question_ids.pop("Five samples, an additive function")
 
     def code(source):
         return highlight(source, PythonLexer(), formatter)
 
-    def capture(*args, **kwargs):
-        for number in plt.get_fignums():
-            fig = plt.figure(number)
-            buffer = BytesIO()
-            fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight")
-            encoded = base64.b64encode(buffer.getvalue()).decode()
-            images.append(f'<img alt="Exact probability histogram with mean and variance" src="data:image/png;base64,{encoded}">')
-            plt.close(fig)
-
-    original_show = plt.show
     original_display = IPython.display.display
     from plotly.offline import get_plotlyjs
     plotly_bundle = get_plotlyjs()
-    plotly_loaded = False
     def capture_display(obj):
-        nonlocal plotly_loaded
         if isinstance(obj, IPython.display.HTML):
-            html = obj.data
-            if plotly_bundle in html:
-                if plotly_loaded:
-                    html = html.replace(plotly_bundle, "")
-                plotly_loaded = True
-            images.append(html)
-        elif isinstance(obj, IPython.display.Image) and obj.format == "gif":
-            encoded = base64.b64encode(obj.data).decode()
-            images.append(f'<img alt="Variance of the average of 1 to 20 coin flips" src="data:image/gif;base64,{encoded}">')
-            (root / "build").mkdir(exist_ok=True)
-            (root / "build" / "coin-variance.gif").write_bytes(obj.data)
+            images.append(obj.data)
         else:
             original_display(obj)
-    plt.show = capture
     IPython.display.display = capture_display
     try:
-        for cell in notebook.cells:
+        for cell_number, cell in enumerate(notebook.cells, 1):
+            started = perf_counter()
             if cell.cell_type == "markdown":
                 if cell.source.startswith("## "):
                     if section_open:
@@ -86,6 +73,8 @@ def build():
                     heading = cell.source.splitlines()[0][3:]
                     section_id = question_ids.get(heading, heading.lower().replace(" · ", "-").replace(" ", "-").replace(":", "").replace("/", ""))
                     sections.append(f'<section id="{escape(section_id)}" class="puzzle">')
+                    if heading.startswith("Section "):
+                        section_nav.append((section_id, heading.split(" · ", 1)[-1]))
                     section_open = True
                     sections.append(render_markdown(cell.source))
                     if heading.startswith(("Exercise · ", "Helper · ")):
@@ -96,32 +85,35 @@ def build():
                         continue
                     name = answers[heading]
                     answer = inspect.getsource(getattr(intro_answers, name))
-                    if name == "ten_samples":
-                        answer = inspect.getsource(intro_answers.monte_carlo) + "\n" + answer
-                    if name == "kl_k3":
-                        answer = inspect.getsource(intro_answers.k3) + "\n" + answer
-                    if name == "kl_estimate":
-                        answer = inspect.getsource(intro_answers.k1) + "\n" + answer
                     sections.append(code(answer))
                 else:
                     if not section_open:
                         sections.append('<section id="introduction" class="intro">')
                         section_open = True
                     sections.append(render_markdown(cell.source))
+                    if cell.source.startswith(("### Exercise · ", "### Helper · ")):
+                        name = cell.source.splitlines()[0].split(" · ", 1)[1]
+                        if hasattr(intro_answers, name):
+                            sections.append(code(inspect.getsource(getattr(intro_answers, name))))
             elif cell.cell_type == "code":
                 output = StringIO()
                 images.clear()
                 with redirect_stdout(output):
-                    exec(compile(cell.source, "puzzle.py", "exec"), namespace)
+                    try:
+                        exec(compile(cell.source, "puzzle.py", "exec"), namespace)
+                    except Exception as exc:
+                        first_line = cell.source.strip().splitlines()[0] if cell.source.strip() else "(empty)"
+                        raise RuntimeError(f"Notebook cell {cell_number} failed: {first_line}") from exc
                 if "hide" not in cell.metadata.get("tags", []):
                     sections.append(code(cell.source))
                     if output.getvalue():
                         sections.append('<pre class="output">' + escape(output.getvalue()) + '</pre>')
                 sections.extend(images)
+            if profile:
+                label = cell.source.splitlines()[0].strip() if cell.source.strip() else "(empty)"
+                timings.append((perf_counter() - started, cell_number, label[:90]))
     finally:
-        plt.show = original_show
         IPython.display.display = original_display
-        plt.close("all")
     if section_open:
         sections.append("</section>")
     css = """
@@ -140,21 +132,13 @@ def build():
     img{display:block;width:100%;height:auto;margin:20px 0 0}footer{color:#708084;font-size:12px;padding-top:25px}
     @media(max-width:600px){header{display:block}nav{margin-top:12px}main{padding:20px 16px}h1{font-size:32px}}
     """
-    navigation = ''.join(f'<a href="#{anchor}">{label}</a>' for anchor, label in
-                         (("section-1-random-variables", "Random Variables"),
-                          ("section-2-joint-variables", "Joint variables"),
-                          ("section-3-elementary-sampling", "Sampling"),
-                          ("section-4-monte-carlo", "Monte Carlo"),
-                          ("section-5-control-variates", "Control Variates"),
-                          ("section-6-example-ab-tests", "A/B Tests"),
-                          ("section-7-kl-approximations", "KL Approximations"),
-                          ("section-8-markov-chains", "Markov Chains"),
-                          ("section-9-group-variance", "Group Variance"),
-                          ("section-10-reinforce", "REINFORCE")))
+    navigation = ''.join(f'<a href="#{escape(anchor)}">{escape(label)}</a>'
+                         for anchor, label in section_nav)
     html = ('<!doctype html><html lang="en"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>RL Puzzles</title><style>' + css + formatter.get_style_defs('.highlight') +
-            '</style><script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>'
+            '</style><script>' + plotly_bundle + '</script>'
+            '<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>'
             '<body><header><div><strong>RL Puzzles</strong></div><nav>' + navigation +
             '</nav></header><main>' + ''.join(sections) +
             '</main></body></html>')
@@ -162,7 +146,10 @@ def build():
     output.parent.mkdir(exist_ok=True)
     output.write_text(html)
     print(f'Built {output} ({len(html):,} characters; {len(names)} checked plots)')
+    if profile:
+        for elapsed, number, label in sorted(timings, reverse=True)[:15]:
+            print(f'{elapsed:6.2f}s  cell {number:3d}  {label}')
 
 
 if __name__ == '__main__':
-    build()
+    build(profile='--profile' in sys.argv)
