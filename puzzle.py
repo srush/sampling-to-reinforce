@@ -32,8 +32,12 @@
 # from scratch. It takes the non-standard approach
 # of doing it without any random numbers.  Obviously, this cannot scale, but it will let us build 
 # intuition for boring things like
-# elementary variance reduction techniques. The blog assumes no knowledge of RL or 
+# elementary variance reduction techniques. # Code is available at [srush/sampling-to-reinforce](https://github.com/srush/sampling-to-reinforce). The blog assumes no knowledge of RL or 
 # math. The text and comments are written by a person; the code is written by AI. 
+# 
+# This project is inspired by [Haskell distributions](https://hackage.haskell.org/package/distribution-1.1.1.0/docs/Data-Distribution.html), 
+# [lea](https://archive.fosdem.org/2015/schedule/event/lea,_a_probability_engine_in_python/), 
+# and [Monte Carlo theory, methods and examples](https://artowen.su.domains/mc/).
 
 # - srush
 # %% tags=["hide"]
