@@ -569,7 +569,8 @@ def sum_variance_slider(x):
     reports = [f"Var(X + Y) = {component:.3f} + {component:.3f} + 2 × {covariance:.3f} = {total:.3f}"
                for _, covariance, total in states]
     ident = "sum-variance-" + uuid.uuid4().hex
-    script = f"""const report=document.getElementById('{ident}');
+    script = "const plot=document.getElementById('{plot_id}');"
+    script += f"""const report=document.getElementById('{ident}');
 const reports={json.dumps(reports)};
 plot.on('plotly_sliderchange', e => {{
  report.textContent=reports[Number(e.step.args[0][0])];
